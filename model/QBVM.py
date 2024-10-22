@@ -17,9 +17,9 @@ class QuasiBayesianVineRegression(BaseEstimator, RegressorMixin):
         return X.ndim == 2 and len(X) == len(y)
 
 
-    def _initialize_marginals(self, X, y):
+    def _initialise_marginals(self, X, y):
         """
-        Initialize each marginal predictive distribution using a Normal prior.
+        Initialise each marginal predictive distribution using a Normal prior.
         """
         for i in range(X.shape[1]):
             mean_init = np.mean(X[:, i])
@@ -112,23 +112,24 @@ class QuasiBayesianVineRegression(BaseEstimator, RegressorMixin):
     def fit(self, X, y):
         """
         Fit the model by initializing and recursively updating the marginal predictives and vine copula.
+        TODO: Check whether we really want to iterate 1-at-a-time over the samples (batches would give distributions).
         """
         X, y = np.asarray(X), np.asarray(y)
         if not self._valid_input(X, y):
             raise ValueError("Invalid input dimensions or data type")
 
-        self._initialize_marginal_predictive_distribution(X, y)
+        self._initialise_marginals(X, y)
 
-        # Update the marginals recursively
-        for i in range(X.shape[1]):
-            for n in range(X.shape[0]):
-                prev_density = self.marginal_predictives[i]
-                current_density = self._update_marginal_predictive(prev_density, X[n, i])
-                self.marginal_predictives[i] = current_density
+        samples_idx = X.shape[0]
+        features_idx = X.shape[1]
+        for sample in range(samples_idx):
+            for feature in range(features_idx):
+                prev_density = self.marginal_predictives[feature]
+                current_density = self._update_marginal_predictive(prev_density, X[sample, feature])
+                self.marginal_predictives[feature] = current_density
 
-        for n in range(len(y)):
             prev_density_y = self.marginal_predictives['y']
-            current_density_y = self._update_marginal_predictive(prev_density_y, y[n])
+            current_density_y = self._update_marginal_predictive(prev_density_y, y[sample])
             self.marginal_predictives['y'] = current_density_y
 
         # Fit the vine copula on the joint data (features + target)
@@ -145,8 +146,9 @@ class QuasiBayesianVineRegression(BaseEstimator, RegressorMixin):
         X = np.asarray(X)
         predictions = []
 
-        for n in range(X.shape[0]):
-            joint_predictive = self._compute_conditional_predictive(X[n, :])
+        samples_idx = X.shape[0]
+        for sample in range(samples_idx):
+            joint_predictive = self._compute_conditional_distribution(X[sample, :])
             predictions.append(joint_predictive)
 
         return np.array(predictions)
@@ -156,15 +158,16 @@ class QuasiBayesianVineRegression(BaseEstimator, RegressorMixin):
         """
         Update the model with new data points (recursive update for marginals and copula).
         """
-        for i in range(new_X.shape[1]):
-            for n in range(new_X.shape[0]):
-                prev_density = self.marginal_predictives[i]
-                current_density = self._update_marginal_predictive(prev_density, new_X[n, i])
-                self.marginal_predictives[i] = current_density
+        samples_idx = new_X.shape[0]
+        features_idx = new_X.shape[1]
+        for sample in range(samples_idx):
+            for feature in range(features_idx):
+                prev_density = self.marginal_predictives[feature]
+                current_density = self._update_marginal_predictive(prev_density, new_X[sample, feature])
+                self.marginal_predictives[feature] = current_density
 
-        for n in range(len(new_y)):
             prev_density_y = self.marginal_predictives['y']
-            current_density_y = self._update_marginal_predictive(prev_density_y, new_y[n])
+            current_density_y = self._update_marginal_predictive(prev_density_y, new_y[sample])
             self.marginal_predictives['y'] = current_density_y
 
         # Update the vine copula with the new data
