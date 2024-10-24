@@ -7,168 +7,261 @@ from scipy.stats import norm
 class QuasiBayesianVineRegression(BaseEstimator, RegressorMixin):
     def __init__(self, rho=0.5, bandwidth=1.0):
         self.rho = rho
-        self.bandwidth = bandwidth
-        self.marginal_predictives = {}
-        self.vine_copula_model = None
-        self.copula_buffer = None
+        self.model = {}
 
 
-    def _valid_input(self, X, y):
-        return X.ndim == 2 and len(X) == len(y)
-
-
-    def _initialise_marginals(self, X, y):
+    def bivariate_copula(self, cdf_x: float, cdf_y: float, rho: float) -> float:
         """
-        Initialise each marginal predictive distribution using a Normal prior.
-        """
-        for i in range(X.shape[1]):
-            mean_init = np.mean(X[:, i])
-            std_init = np.std(X[:, i])
-            self.marginal_predictives[i] = norm(loc=mean_init, scale=std_init)
-        self.marginal_predictives['y'] = norm(loc=np.mean(y), scale=np.std(y))
-
-
-    def _update_marginal_predictive(self, prev_density, new_sample):
-        """
-        Update marginal predictive recursively using Bayesian recursion
-        This updates the mean and variance based on the new data sample.
-        """
-        prev_mean, prev_std = prev_density.mean(), prev_density.std()
-
-        # Bayesian update rule for mean and standard deviation.
-        new_mean = prev_mean + self.rho * (new_sample - prev_mean)
-        # TODO: Implement dynamic std. Consider how? Options?
-        new_std = prev_std
-
-        return norm(loc=new_mean, scale=new_std)
-
-
-    def _fit_vine_copula(self, X, y):
-        """
-        Fit the vine copula model on the joint distribution of features and target.
-        """
-        _data = np.column_stack([X, y])
-        pseudo_obs = self._pseudo_obs(_data)
-        self.vine_copula_model = pv.Vinecop(pseudo_obs)
-        # Store the pseudo-observations for future updates
-        self.copula_buffer = pseudo_obs  
-
-
-    def _update_vine_copula(self, new_X, new_y):
-        """
-        Update the vine copula with new data.
-        """
-        _new_data = np.column_stack([new_X, new_y])
-        new_pseudo_obs = self._pseudo_obs(_new_data)
+        Computes the bivariate Gaussian copula density with covariance rho.
         
-        # Update the copula buffer with new pseudo-observations
-        self.copula_buffer = np.vstack([self.copula_buffer, new_pseudo_obs])
-        self.vine_copula_model = pv.Vinecop(self.copula_buffer)
-
-
-    def _pseudo_obs(self, data):
+        Parameters:
+        - cdf_x: CDF value for the first variable (P_i(x))
+        - cdf_y: CDF value for the second variable (P_j(x))
+        - rho: Correlation parameter between the two variables.
+        
+        Returns:
+        - The copula density value.
         """
-        Compute the pseudo-observations (rank-transformed data scaled to [0, 1]).
+        if abs(rho) >= 1:
+            raise ValueError("The parameter rho must be between -1 and 1 (exclusive).")
+
+        # Compute the inverse CDF (quantile function) of the standard normal distribution
+        quantile_x = norm.ppf(cdf_x)
+        quantile_y = norm.ppf(cdf_y)
+        
+        numerator = quantile_x**2 + quantile_y**2 - 2 * rho * quantile_x * quantile_y
+        denominator = 2 * (1 - rho**2)
+        
+        copula_density = (1 / np.sqrt(1 - rho**2)) * np.exp(-numerator / denominator)
+        
+        return copula_density
+
+
+    def conditional_copula(self, cdf_x:np.ndarray, cdf_y:np.ndarray, rho:float):
         """
-        ranks = np.argsort(np.argsort(data, axis=0), axis=0) + 1
-        return ranks / (len(data) + 1)
+        Computes H_rho(cdf_x, cdf_y), the Gaussian copula-based function.
+        Equation (5)
 
+        Parameters:
+        - cdf_x: CDF value for the first variable (equivalent to u in the equation).
+        - cdf_y: CDF value for the second variable (equivalent to v in the equation).
+        - rho: Copula parameter (correlation coefficient) between the two variables.
 
-    def _compute_conditional_distribution(self, X_row, _n_closest:int = 50):
+        Returns:
+        - The value of H_rho(cdf_x, cdf_y).
         """
-        Compute the conditional predictive distribution for the target given feature values.
+
+        if abs(rho) >= 1:
+            raise ValueError("The parameter rho must be between -1 and 1 (exclusive).")
+
+        quantile_x = norm.ppf(cdf_x)  # Equivalent to Phi^{-1}(cdf_x)
+        quantile_y = norm.ppf(cdf_y)  # Equivalent to Phi^{-1}(cdf_y)
+
+        numerator = quantile_x - rho * quantile_y
+        denominator = np.sqrt(1 - rho**2)
+
+        H = norm.cdf(numerator / denominator)
+
+        return H
+    
+
+    def _update_dist(self, al, _dist, _n_dists):
         """
-        marginals = []
-        for i in range(len(X_row)):
-            prev_density = self.marginal_predictives[i]
-            updated_density = self._update_marginal_predictive(prev_density, X_row[i])
-            self.marginal_predictives[i] = updated_density
-            marginals.append(updated_density)
-
-        if self.vine_copula_model:
-            pseudo_obs_features = self._pseudo_obs(X_row.reshape(1, -1))
-
-            # Simulate from the vine copula to predict the target.
-            # Simulate full data, then condition on features
-            joint_samples = self.vine_copula_model.simulate(10000)
-
-            # Separate features and target from simulated data
-            simulated_features = joint_samples[:, :-1]
-            simulated_target = joint_samples[:, -1]
-
-            # TODO: Improve this method. Is there a better way?
-            # Find samples where the simulated features are closest to the actual feature values
-            distance = np.linalg.norm(simulated_features - pseudo_obs_features, axis=1)
-            closest_idx = np.argsort(distance)[:_n_closest]
-            # Use the median target value of the closest samples as the prediction
-            target_prediction = np.median(simulated_target[closest_idx])
-        else:
-            # If no copula model, return the product of marginal PDFs
-            target_prediction = np.prod([m.pdf(X_row[i]) for i, m in enumerate(marginals)])
-
-        return target_prediction
-
-
-    def fit(self, X, y):
+        Equation 4 from Paper.
         """
-        Fit the model by initializing and recursively updating the marginal predictives and vine copula.
-        TODO: Check whether we really want to iterate 1-at-a-time over the samples (batches would give distributions).
+        _term1 = (1 - al) * _dist
+        term_2 = al * self.conditional_copula(_dist, _n_dists, self.rho)
+        return _term1 + term_2
+    
+
+    def apply_recursion(self, alpha: float, last_dist: np.ndarray, last_n_dists: np.ndarray, last_density: np.ndarray, last_y_dist: np.ndarray):
+        _iter_data = {}
+
+        # Equation 3: Update p(x)
+        _iter_data['x_density'] = last_density * ((1 - alpha) + (alpha * self.bivariate_copula(last_dist, last_n_dists, self.rho)))
+
+        # Equation 4: Update for P(x)
+        _iter_data['x_distribution'] = self._update_dist(alpha, last_dist, last_n_dists)
+
+        # Update P(x^n) for the next iteration (future use)
+        # TODO: Validate that the order of inputs is correct - gpt told me to do this!
+        _iter_data['x_distribution_n'] = self._update_dist(alpha, last_n_dists, last_dist)
+
+        # Equation 12: Update p(y|x) 
+        _iter_data['y_distribution'] = self._update_dist(alpha, last_y_dist, last_n_dists)
+
+        return _iter_data
+    
+    def initialise_recursions(self, ns:int):
         """
-        X, y = np.asarray(X), np.asarray(y)
-        if not self._valid_input(X, y):
-            raise ValueError("Invalid input dimensions or data type")
-
-        self._initialise_marginals(X, y)
-
-        samples_idx = X.shape[0]
-        features_idx = X.shape[1]
-        for sample in range(samples_idx):
-            for feature in range(features_idx):
-                prev_density = self.marginal_predictives[feature]
-                current_density = self._update_marginal_predictive(prev_density, X[sample, feature])
-                self.marginal_predictives[feature] = current_density
-
-            prev_density_y = self.marginal_predictives['y']
-            current_density_y = self._update_marginal_predictive(prev_density_y, y[sample])
-            self.marginal_predictives['y'] = current_density_y
-
-        # Fit the vine copula on the joint data (features + target)
-        self._fit_vine_copula(X, y)
-
-        self.fitted_ = True
-        return self
-
-
-    def predict(self, X):
-        if not hasattr(self, 'fitted_'):
-            raise ValueError("This QuasiBayesianVineRegression instance is not fitted yet.")
-
-        X = np.asarray(X)
-        predictions = []
-
-        samples_idx = X.shape[0]
-        for sample in range(samples_idx):
-            joint_predictive = self._compute_conditional_distribution(X[sample, :])
-            predictions.append(joint_predictive)
-
-        return np.array(predictions)
-
-
-    def update(self, new_X, new_y):
+        Currently applies Uniform Dist.
         """
-        Update the model with new data points (recursive update for marginals and copula).
+        data = {
+                'x_density': np.ones(ns),
+                'x_distribution': np.zeros(ns),
+                'x_distribution_n': np.zeros(ns),
+                'y_distribution': np.zeros(ns)
+            }
+
+        # Normalize arrays to [0, 1] range
+        data['x_distribution'] = np.linspace(0, 1, ns)
+        data['x_distribution_n'] = np.linspace(0, 1, ns)
+        data['y_distribution'] = np.linspace(0, 1, ns)
+
+        # Calculate density
+        density = 1 / ns
+
+        # Update x_density with the calculated density
+        data['x_density'] = np.full(ns, density)
+        return data
+
+
+    def recurse_marginals(self, data: np.ndarray):
         """
-        samples_idx = new_X.shape[0]
-        features_idx = new_X.shape[1]
-        for sample in range(samples_idx):
-            for feature in range(features_idx):
-                prev_density = self.marginal_predictives[feature]
-                current_density = self._update_marginal_predictive(prev_density, new_X[sample, feature])
-                self.marginal_predictives[feature] = current_density
+        Get Marginal Densities and Distributions.
+        Iterate Equations (3) and (4) from paper.
 
-            prev_density_y = self.marginal_predictives['y']
-            current_density_y = self._update_marginal_predictive(prev_density_y, new_y[sample])
-            self.marginal_predictives['y'] = current_density_y
+        Input:
+            - data: The dataset with shape (n_samples, n_features)
 
-        # Update the vine copula with the new data
-        self._update_vine_copula(new_X, new_y)
+        Output:
+            - marginals_x: A dictionary containing updated marginal densities and distributions
+        """
+        ns = data.shape[1]  # number of datapoints/observations.
+        marginals = {0: self.initialise_recursions(ns)}
+
+        for n in range(1, ns):
+            last_dist = marginals[n-1]['x_distribution']
+            last_n_dists = marginals[n-1]['x_distribution_n']
+            last_density = marginals[n-1]['x_density']
+            last_y_dist = marginals[n-1]['y_distribution']
+            alpha_n = (2 - (n^-1)) * (1 / (1+n))
+
+            marginals[n] = self.apply_recursion(alpha_n, last_dist, last_n_dists, last_density, last_y_dist)
+
+        return marginals
+
+
+    def estimate_copulas(self, marg_dists: dict):
+        """
+        Get Copula for Joint Copula and X Copula.
+        Iterate through feature pairs i, j and compute c_{ij} through Equation (11) from Paper.
+        Then apply Equation (10) and multiply them all together.
+
+        Input:
+            - Marginal Distributions (P_n)
+        Output:
+            - c_x: Copula for X (x_copula)
+            - c_joint: Joint copula for (X, y)
+        """
+        dims = list(marg_dists.keys())  
+        
+        c_x_multiples = []
+        c_joint_multiples = []
+        
+        # For each pair of dimensions i, j (including y in joint copula)
+        for i in dims:
+            for j in dims:
+                if i >= j:
+                    continue
+                c_ij = self.compute_pairwise_copula(marg_dists[i], marg_dists[j])
+
+                # Exclude 'y' dimension in X Copula
+                if i != len(dims) - 1 and j != len(dims) - 1:  
+                    c_x_multiples.append(c_ij)
+                
+                c_joint_multiples.append(c_ij)
+        
+        # Multiply all pairwise copulas together for both x_copula and joint_copula
+        x_copula = np.prod(c_x_multiples)
+        joint_copula = np.prod(c_joint_multiples)
+        
+        return x_copula, joint_copula
+
+
+    def compute_pairwise_copula(self, dist_i, dist_j):
+        """
+        Compute the pairwise KDE-based copula c_ij between two marginal distributions
+        using Equation (11) from the paper.
+
+        Input:
+            dist_i: Marginal distribution P_i
+            dist_j: Marginal distribution P_j
+        Output:
+            c_ij: Pairwise copula value between P_i and P_j
+        """
+        # TODO: Implement KDE-based copula estimation here (Equation 11)
+        # THIS IS A PLACEHOLDER!
+
+        kde_copula = np.exp(-0.5 * (np.linalg.norm(dist_i - dist_j))**2)
+
+        return kde_copula
+
+
+    def fit(self, X: np.ndarray, y: np.ndarray):
+        """
+        Fit the Quasi-Bayesian Vine Model on the input data.
+        
+        Parameters:
+        X: np.ndarray
+            Input feature data with shape (n_samples, n_features)
+        y: np.ndarray
+            Target values with shape (n_samples,)
+
+        Returns:
+        dict
+            A dictionary with the fitted marginals and copula model.
+        """
+        # Recursive Marginals
+        _recursive_data = np.hstack((X, y.reshape(-1, 1)))
+        marginals = self.recurse_marginals(_recursive_data)
+        final_marginals = marginals[X.shape[1]]
+
+        # Estimate Copula for Combining the Marginals.
+        x_copula, joint_copula = self.estimate_copulas(marginals)
+        
+        self.model = {
+            'joint_copula': joint_copula,
+            'x_copula': x_copula,
+            'y_marginal': final_marginals['y_distribution'],
+            }
+        
+        return self.model
+    
+
+    def predict_sample(self, _X):
+        """
+        Equation 12.
+        Predict the probability density for y given input X.
+        
+        Parameters:
+        -----------
+        X : array-like
+            Input vector for which to predict y.
+        
+        Returns:
+        --------
+        y_density : float
+            Predicted density for y given X.
+        """
+
+        c_X = self.model['x_copula'].pdf(_X)
+                
+        y_range = np.linspace(self.ys['min'], self.ys['max'], 1000)  
+        y_predictions = []
+        
+        for y in y_range:
+            joint_vars = np.hstack(([y], _X))
+            c_y_X = self.model['joint_copula'].pdf(joint_vars)
+            p_y = self.model['y_marginal'].pdf(y)
+            conditional_density = (c_y_X * p_y) / c_X
+            y_predictions.append(conditional_density)
+        
+        return np.array(y_predictions)
+    
+
+    def predict(self, X:np.ndarray):
+        self.predictions = np.zeros(X.shape[0])
+        for i, sample in enumerate(X):
+            self.predictions[i] = self.predict_sample(sample)
+        return self.predictions
