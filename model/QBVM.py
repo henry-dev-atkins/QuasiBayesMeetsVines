@@ -5,63 +5,46 @@ from scipy.stats import gaussian_kde, norm
 
 
 class QuasiBayesianVineRegression(BaseEstimator, RegressorMixin):
-    def __init__(self, rho=0.5, bandwidth=1.0):
-        self.rho = rho
+    def __init__(self):
         self.model = {}
 
 
-    def bivariate_copula(self, cdf_x: float, cdf_y: float, rho: float) -> float:
+    def bivariate_copula(self, cdf_x: np.ndarray, cdf_y: np.ndarray) -> float:
         """
-        Computes the bivariate Gaussian copula density with covariance rho.
+        Automatically selects the best-fitting bivariate copula family and computes the copula density.
         
         Parameters:
-        - cdf_x: CDF value for the first variable (P_i(x))
-        - cdf_y: CDF value for the second variable (P_j(x))
-        - rho: Correlation parameter between the two variables.
+        - cdf_x: CDF values for the first variable (array-like)
+        - cdf_y: CDF values for the second variable (array-like)
         
         Returns:
-        - The copula density value.
+        - copula_density: The copula density value for the selected copula family.
         """
-        if abs(rho) >= 1:
-            raise ValueError("The parameter rho must be between -1 and 1 (exclusive).")
-
-        # Compute the inverse CDF (quantile function) of the standard normal distribution
-        quantile_x = norm.ppf(cdf_x)
-        quantile_y = norm.ppf(cdf_y)
-        
-        numerator = quantile_x**2 + quantile_y**2 - 2 * rho * quantile_x * quantile_y
-        denominator = 2 * (1 - rho**2)
-        
-        copula_density = (1 / np.sqrt(1 - rho**2)) * np.exp(-numerator / denominator)
-        
-        return copula_density
+        data = np.vstack((cdf_x, cdf_y)).T
+        bicop_model = pv.Bicop()
+        bicop_model.select(data=data)
+                
+        return bicop_model.pdf(data)
 
 
-    def conditional_copula(self, cdf_x:np.ndarray, cdf_y:np.ndarray, rho:float):
+    def conditional_copula(self, cdf_x: np.ndarray, cdf_y: np.ndarray) -> np.ndarray:
         """
-        Computes H_rho(cdf_x, cdf_y), the Gaussian copula-based function.
-        Equation (5)
+        Computes H(cdf_x, cdf_y), the conditional copula-based function using the best-fit copula model.
+        Automatically selects the copula family using Bicop.select().
 
         Parameters:
-        - cdf_x: CDF value for the first variable (equivalent to u in the equation).
-        - cdf_y: CDF value for the second variable (equivalent to v in the equation).
-        - rho: Copula parameter (correlation coefficient) between the two variables.
+        - cdf_x: CDF values for the first variable (array-like).
+        - cdf_y: CDF values for the second variable (array-like).
 
         Returns:
-        - The value of H_rho(cdf_x, cdf_y).
+        - H: The conditional CDF value H(cdf_x | cdf_y) based on the selected copula family.
         """
-
-        if abs(rho) >= 1:
-            raise ValueError("The parameter rho must be between -1 and 1 (exclusive).")
-
-        quantile_x = np.nan_to_num(norm.ppf(cdf_x), 0)  # Equivalent to Phi^{-1}(cdf_x)
-        quantile_y = np.nan_to_num(norm.ppf(cdf_y), 0)  # Equivalent to Phi^{-1}(cdf_y)
-
-        numerator = quantile_x - rho * quantile_y
-        denominator = np.sqrt(1 - rho**2)
-
-        H = norm.cdf(numerator / denominator)
-
+        data = np.vstack((cdf_x, cdf_y)).T
+        bicop_model = pv.Bicop()
+        bicop_model.select(data=data)
+        
+        # Conditional CDF H(cdf_x | cdf_y) with first h-function
+        H = bicop_model.hfunc1(data)
         return H
     
 
@@ -70,7 +53,7 @@ class QuasiBayesianVineRegression(BaseEstimator, RegressorMixin):
         Equation 4 from Paper.
         """
         _term1 = (1 - al) * _dist
-        term_2 = al * self.conditional_copula(_dist, _n_dists, self.rho)
+        term_2 = al * self.conditional_copula(_dist, _n_dists)
         return _term1 + term_2
     
 
@@ -78,7 +61,7 @@ class QuasiBayesianVineRegression(BaseEstimator, RegressorMixin):
         _iter_data = {}
 
         # Equation 3: Update p(x)
-        _iter_data['x_density'] = last_density * ((1 - alpha) + (alpha * self.bivariate_copula(last_dist, last_n_dists, self.rho)))
+        _iter_data['x_density'] = last_density * ((1 - alpha) + (alpha * self.bivariate_copula(last_dist, last_n_dists)))
 
         # Equation 4: Update for P(x)
         _iter_data['x_distribution'] = self._update_dist(alpha, last_dist, last_n_dists)
@@ -127,7 +110,7 @@ class QuasiBayesianVineRegression(BaseEstimator, RegressorMixin):
         Output:
             - marginals_x: A dictionary containing updated marginal densities and distributions
         """
-        ns = data.shape[1]  # number of datapoints/observations.
+        ns = data.shape[0]  # number of datapoints/observations.
         marginals = {0: self.initialise_recursions(ns)}
 
         for n in range(1, ns):
@@ -227,7 +210,8 @@ class QuasiBayesianVineRegression(BaseEstimator, RegressorMixin):
         y_density : float
             Predicted density for y given X.
         """
-        c_X = self.model['x_copula'].pdf(_X).reshape(-1, 1)
+        print(_X)
+        c_X = self.model['x_copula'].pdf(_X)
 
         y_predictions = np.zeros(_iters)
         y_range = np.linspace(self.model['y_min'], self.model['y_max'], _iters)
@@ -243,6 +227,9 @@ class QuasiBayesianVineRegression(BaseEstimator, RegressorMixin):
 
     def predict(self, X:np.ndarray):
         self.predictions = np.zeros(X.shape[0])
+        if len(X.shape) == 1:
+            self.predictions = self.predict_sample(X)
+            return self.predictions
         for i, sample in enumerate(X):
             self.predictions[i] = self.predict_sample(sample)
         return self.predictions
