@@ -144,7 +144,8 @@ class QuasiBayesianVineRegression(BaseEstimator, RegressorMixin):
 
     def estimate_copulas(self, marg_dists: dict):
         """
-        Get Copula for Joint Copula and X Copula.
+        Equation 10.
+        Get Copula for both the Joint Copula and X Copula.
         Iterate through feature pairs i, j and compute c_{ij} through Equation (11) from Paper.
         Then apply Equation (10) and multiply them all together.
 
@@ -154,7 +155,7 @@ class QuasiBayesianVineRegression(BaseEstimator, RegressorMixin):
             - c_x: Copula for X (x_copula)
             - c_joint: Joint copula for (X, y)
         """
-        dims = list(marg_dists.keys())  
+        dims = list(marg_dists.keys())
         
         c_x_multiples = []
         c_joint_multiples = []
@@ -172,7 +173,6 @@ class QuasiBayesianVineRegression(BaseEstimator, RegressorMixin):
                 
                 c_joint_multiples.append(c_ij)
         
-        # Multiply all pairwise copulas together for both x_copula and joint_copula
         x_copula = np.prod(c_x_multiples)
         joint_copula = np.prod(c_joint_multiples)
         
@@ -190,11 +190,9 @@ class QuasiBayesianVineRegression(BaseEstimator, RegressorMixin):
         Output:
             c_ij: Pairwise copula value between P_i and P_j
         """
-        # TODO: Implement KDE-based copula estimation here (Equation 11)
-        # THIS IS A PLACEHOLDER!
-
+        # TODO: Implement Actual KDE-based copula estimation here (Equation 11)
+        # THIS EQUATION IS A PLACEHOLDER!
         kde_copula = np.exp(-0.5 * (np.linalg.norm(dist_i - dist_j))**2)
-
         return kde_copula
 
 
@@ -212,13 +210,15 @@ class QuasiBayesianVineRegression(BaseEstimator, RegressorMixin):
         dict
             A dictionary with the fitted marginals and copula model.
         """
+
         # Recursive Marginals
         _recursive_data = np.hstack((X, y.reshape(-1, 1)))
         marginals = self.recurse_marginals(_recursive_data)
         final_marginals = marginals[X.shape[1]]
 
         # Estimate Copula for Combining the Marginals.
-        x_copula, joint_copula = self.estimate_copulas(marginals)
+        joint_copula = self.estimate_copulas(marginals)
+        x_copula = self.estimate_copulas(marginals)
         
         self.model = {
             'joint_copula': joint_copula,
