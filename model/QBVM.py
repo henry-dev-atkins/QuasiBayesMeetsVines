@@ -1,7 +1,7 @@
 import pyvinecopulib as pv
 from sklearn.base import BaseEstimator, RegressorMixin
 import numpy as np
-from scipy.stats import norm
+from scipy.stats import gaussian_kde, norm
 
 
 class QuasiBayesianVineRegression(BaseEstimator, RegressorMixin):
@@ -54,8 +54,8 @@ class QuasiBayesianVineRegression(BaseEstimator, RegressorMixin):
         if abs(rho) >= 1:
             raise ValueError("The parameter rho must be between -1 and 1 (exclusive).")
 
-        quantile_x = norm.ppf(cdf_x)  # Equivalent to Phi^{-1}(cdf_x)
-        quantile_y = norm.ppf(cdf_y)  # Equivalent to Phi^{-1}(cdf_y)
+        quantile_x = np.nan_to_num(norm.ppf(cdf_x), 0)  # Equivalent to Phi^{-1}(cdf_x)
+        quantile_y = np.nan_to_num(norm.ppf(cdf_y), 0)  # Equivalent to Phi^{-1}(cdf_y)
 
         numerator = quantile_x - rho * quantile_y
         denominator = np.sqrt(1 - rho**2)
@@ -142,41 +142,21 @@ class QuasiBayesianVineRegression(BaseEstimator, RegressorMixin):
         return marginals
 
 
-    def estimate_copulas(self, marg_dists: dict):
+    def estimate_copula(self, marg_dists: np.ndarray):
         """
         Equation 10.
-        Get Copula for both the Joint Copula and X Copula.
-        Iterate through feature pairs i, j and compute c_{ij} through Equation (11) from Paper.
-        Then apply Equation (10) and multiply them all together.
-
+        Get Copula (used for both the Joint Copula and X Copula).
+        
         Input:
             - Marginal Distributions (P_n)
         Output:
-            - c_x: Copula for X (x_copula)
-            - c_joint: Joint copula for (X, y)
+            - c: Copula 
         """
-        dims = list(marg_dists.keys())
-        
-        c_x_multiples = []
-        c_joint_multiples = []
-        
-        # For each pair of dimensions i, j (including y in joint copula)
-        for i in dims:
-            for j in dims:
-                if i >= j:
-                    continue
-                c_ij = self.compute_pairwise_copula(marg_dists[i], marg_dists[j])
+        copula_model = pv.Vinecop(data=marg_dists)
 
-                # Exclude 'y' dimension in X Copula
-                if i != len(dims) - 1 and j != len(dims) - 1:  
-                    c_x_multiples.append(c_ij)
-                
-                c_joint_multiples.append(c_ij)
-        
-        x_copula = np.prod(c_x_multiples)
-        joint_copula = np.prod(c_joint_multiples)
-        
-        return x_copula, joint_copula
+        copula_density = copula_model.pdf(marg_dists)
+
+        return copula_model
 
 
     def compute_pairwise_copula(self, dist_i, dist_j):
@@ -217,19 +197,22 @@ class QuasiBayesianVineRegression(BaseEstimator, RegressorMixin):
         final_marginals = marginals[X.shape[1]]
 
         # Estimate Copula for Combining the Marginals.
-        joint_copula = self.estimate_copulas(marginals)
-        x_copula = self.estimate_copulas(marginals)
-        
+        joint_copula = self.estimate_copula(np.hstack((final_marginals['x_distribution'], final_marginals['y_distribution'])))
+        x_copula = self.estimate_copula(final_marginals['x_distribution'])
+
+        #TODO: Check gaussian_kde is correct here
+        # Use a scipy Gaussian KDE to represent the marginal distribution of y.
         self.model = {
             'joint_copula': joint_copula,
             'x_copula': x_copula,
-            'y_marginal': final_marginals['y_distribution'],
+            'y_marginal': gaussian_kde(final_marginals['y_distribution']),
+            'y_max': y.max(),
+            'y_min': y.min()
             }
-        
         return self.model
     
 
-    def predict_sample(self, _X):
+    def predict_sample(self, _X, _iters:int=1000):
         """
         Equation 12.
         Predict the probability density for y given input X.
@@ -244,20 +227,18 @@ class QuasiBayesianVineRegression(BaseEstimator, RegressorMixin):
         y_density : float
             Predicted density for y given X.
         """
+        c_X = self.model['x_copula'].pdf(_X).reshape(-1, 1)
 
-        c_X = self.model['x_copula'].pdf(_X)
-                
-        y_range = np.linspace(self.ys['min'], self.ys['max'], 1000)  
-        y_predictions = []
-        
+        y_predictions = np.zeros(_iters)
+        y_range = np.linspace(self.model['y_min'], self.model['y_max'], _iters)
         for y in y_range:
             joint_vars = np.hstack(([y], _X))
             c_y_X = self.model['joint_copula'].pdf(joint_vars)
             p_y = self.model['y_marginal'].pdf(y)
             conditional_density = (c_y_X * p_y) / c_X
-            y_predictions.append(conditional_density)
+            y_predictions[int(y)] = conditional_density.mean()
         
-        return np.array(y_predictions)
+        return y_predictions.mean()
     
 
     def predict(self, X:np.ndarray):
