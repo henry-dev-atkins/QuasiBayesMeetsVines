@@ -30,7 +30,10 @@ class QuasiBayesianVineRegression(BaseEstimator, RegressorMixin):
             dependency values as per Equation 2, which cannot directly reuse the full vine 
             structure or KDE components.
         """
+        print(cdf_y)
+        print(cdf_x.shape, cdf_y.shape)
         data = np.vstack((cdf_x, cdf_y)).T
+        print(data.shape)
         bicop_model = pv.Bicop()
         bicop_model.select(data=data)
                 
@@ -94,6 +97,7 @@ class QuasiBayesianVineRegression(BaseEstimator, RegressorMixin):
 
         for sample in samples:
             # density p(x) (Equation 3)
+            print("Samples:", _iter_data['x_distribution'].shape, sample.shape)
             _iter_data['x_density'] *= (1 - alpha) + (alpha * self.bivariate_copula(_iter_data['x_distribution'], sample))
 
             # Cumulative Distribution P(x) (Equation 4)
@@ -118,24 +122,26 @@ class QuasiBayesianVineRegression(BaseEstimator, RegressorMixin):
         - data: dict, initialized data with specified distribution type.
         """
         if distribution_type == 'cauchy':
-            x_values = np.linspace(0, 1, ns)
+            #TODO: Check range
+            x_values = np.linspace(-10, 10, ns)
             data = {
                 'x_density': cauchy.pdf(x_values),
                 'x_distribution': cauchy.cdf(x_values),
                 'x_distribution_n': cauchy.cdf(x_values),
                 'y_distribution': cauchy.cdf(x_values),
-                }
+            }
         elif distribution_type == 'uniform':
-            # Uniform distribution initialization with a simplified approach.
-            # TODO: Fix this
             data = {
-                'x_density': uniform.pdf(ns, 1 / ns),
-                'x_distribution': uniform.cdf(0, 1, ns),
-                'x_distribution_n': uniform.cdf(0, 1, ns),
-                'y_distribution': uniform.cdf(0, 1, ns),
+                'x_density': np.ones(ns).reshape(1, 1),
+                'x_distribution': np.sort(np.random.uniform(0, 1, ns)),
+                'x_distribution_n': np.sort(np.random.uniform(0, 1, ns)),
+                'y_distribution': np.sort(np.random.uniform(0, 1, ns))
                 }
+            for key, value in data.items():
+                print(key, value.shape)
         else:
             raise ValueError(f"initialise_recursions: Distribution_type must be 'uniform' or 'cauchy', but is {distribution_type}.")
+
         return data
 
 
@@ -150,7 +156,7 @@ class QuasiBayesianVineRegression(BaseEstimator, RegressorMixin):
         Output:
             - marginals_x: A dictionary containing updated marginal densities and distributions
         """
-        ns = data.shape[0]  # number of datapoints/observations.
+        ns = data.shape[1]  # number of dimensions
         marginals = {0: self.initialise_recursions(ns)}
 
         for n in range(1, ns):
@@ -159,7 +165,6 @@ class QuasiBayesianVineRegression(BaseEstimator, RegressorMixin):
             last_density = marginals[n-1]['x_density']
             last_y_dist = marginals[n-1]['y_distribution']
             alpha_n = (2 - (n^-1)) * (1 / (1+n))
-
             marginals[n] = self.apply_recursion(alpha_n, last_dist, last_n_dists, last_density, last_y_dist)
 
         return marginals
@@ -226,7 +231,7 @@ class QuasiBayesianVineRegression(BaseEstimator, RegressorMixin):
         """
 
         # Recursive Marginals
-        _recursive_data = np.hstack((X, y.reshape(-1, 1)))
+        _recursive_data = np.hstack((X, y))
         marginals = self.recurse_marginals(_recursive_data)
         final_marginals = marginals[X.shape[1]]
 
@@ -261,7 +266,6 @@ class QuasiBayesianVineRegression(BaseEstimator, RegressorMixin):
         y_density : float
             Predicted density for y given X.
         """
-        print(_X)
         c_X = self.model['x_copula'].pdf(_X)
 
         y_predictions = np.zeros(_iters)
@@ -273,6 +277,11 @@ class QuasiBayesianVineRegression(BaseEstimator, RegressorMixin):
             conditional_density = (c_y_X * p_y) / c_X
             y_predictions[int(y)] = conditional_density.mean()
         
+        # TODO: Consider alternatives to mean:
+        #       - Weighted Mean Based on Conditional Density
+        #       - Mode of the Conditional Distribution
+        #       - Quantile-based Mean (Trimmed Mean)
+        #       - Expected Value Calculation Using Trapezoidal Integration
         return y_predictions.mean()
     
 
@@ -284,3 +293,18 @@ class QuasiBayesianVineRegression(BaseEstimator, RegressorMixin):
         for i, sample in enumerate(X):
             self.predictions[i] = self.predict_sample(sample)
         return self.predictions
+
+
+if __name__ == '__main__':
+    from sklearn.datasets import load_wine
+    from sklearn.preprocessing import MinMaxScaler
+
+    feat, target = load_wine(return_X_y=True)
+
+    feat = MinMaxScaler().fit_transform(feat)
+    target = MinMaxScaler().fit_transform(target.reshape(-1, 1))
+
+    model = QuasiBayesianVineRegression()
+    model.fit(feat, target[:len(feat)])
+
+    model.predict(feat[2])
