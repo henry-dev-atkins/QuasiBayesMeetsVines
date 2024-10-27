@@ -1,7 +1,7 @@
 import pyvinecopulib as pv
 from sklearn.base import BaseEstimator, RegressorMixin
 import numpy as np
-from scipy.stats import gaussian_kde, norm
+from scipy.stats import gaussian_kde, norm, cauchy, uniform
 
 
 class QuasiBayesianVineRegression(BaseEstimator, RegressorMixin):
@@ -19,6 +19,16 @@ class QuasiBayesianVineRegression(BaseEstimator, RegressorMixin):
         
         Returns:
         - copula_density: The copula density value for the selected copula family.
+
+        Purpose: 
+            This copula models dependencies between two variables in the recursive density update.
+        Implementation: 
+            This bivariate copula acts as a basic unit for pairwise dependencies and needs to be 
+            independently implemented for updating univariate densities. 
+        Why Seperate Copulas?
+            The code must allow for flexible bivariate copula selection and use conditional 
+            dependency values as per Equation 2, which cannot directly reuse the full vine 
+            structure or KDE components.
         """
         data = np.vstack((cdf_x, cdf_y)).T
         bicop_model = pv.Bicop()
@@ -38,6 +48,19 @@ class QuasiBayesianVineRegression(BaseEstimator, RegressorMixin):
 
         Returns:
         - H: The conditional CDF value H(cdf_x | cdf_y) based on the selected copula family.
+
+        Purpose: 
+            Equation (4) involves a conditional copula transformation specifically used for 
+            recursively updating the cumulative distribution function. It provides updates to 
+            marginal distributions, transforming the cumulative distributions by conditioning 
+            on observed data.
+        Implementation: 
+            This conditional copula, associated with Equation (4), requires a conditional 
+            structure (i.e., Hρ as in Equation (5)), involving specialized calculations that 
+            differ from simple bivariate or vine copulas. 
+        Why Seperate Copulas?
+            This implementation should ideally not be combined with the vine copula but instead 
+            remain focused on conditioning for cumulative distributions.
         """
         data = np.vstack((cdf_x, cdf_y)).T
         bicop_model = pv.Bicop()
@@ -48,54 +71,71 @@ class QuasiBayesianVineRegression(BaseEstimator, RegressorMixin):
         return H
     
 
-    def _update_dist(self, al, _dist, _n_dists):
+    def _update_dist(self, al, p_x, p_xn):
         """
         Equation 4 from Paper.
         """
-        _term1 = (1 - al) * _dist
-        term_2 = al * self.conditional_copula(_dist, _n_dists)
+        _term1 = (1 - al) * p_x
+        term_2 = al * self.conditional_copula(p_x, p_xn)
         return _term1 + term_2
-    
+        
 
-    def apply_recursion(self, alpha: float, last_dist: np.ndarray, last_n_dists: np.ndarray, last_density: np.ndarray, last_y_dist: np.ndarray):
-        _iter_data = {}
-
-        # Equation 3: Update p(x)
-        _iter_data['x_density'] = last_density * ((1 - alpha) + (alpha * self.bivariate_copula(last_dist, last_n_dists)))
-
-        # Equation 4: Update for P(x)
-        _iter_data['x_distribution'] = self._update_dist(alpha, last_dist, last_n_dists)
-
-        # Update P(x^n) for the next iteration (future use)
-        # TODO: Validate that the order of inputs is correct - gpt told me to do this!
-        _iter_data['x_distribution_n'] = self._update_dist(alpha, last_n_dists, last_dist)
-
-        # Equation 12: Update p(y|x) 
-        _iter_data['y_distribution'] = self._update_dist(alpha, last_y_dist, last_n_dists)
-
-        return _iter_data
-    
-    def initialise_recursions(self, ns:int):
+    def apply_recursion(self, alpha, samples, initial_density, initial_distribution, initial_y_dist):
         """
-        Currently applies Uniform Dist.
+        Applies sample-wise recursion to update the distribution and density functions.
         """
-        data = {
-                'x_density': np.ones(ns),
-                'x_distribution': np.zeros(ns),
-                'x_distribution_n': np.zeros(ns),
-                'y_distribution': np.zeros(ns)
+        _iter_data = {
+            'x_density':                  initial_density,
+            'x_distribution':             initial_distribution,
+            'x_distribution_last_sample': initial_distribution,
+            'y_distribution':             initial_y_dist,
+            'y_density':                  initial_y_dist,
             }
 
-        # Normalize arrays to [0, 1] range
-        data['x_distribution'] = np.linspace(0, 1, ns)
-        data['x_distribution_n'] = np.linspace(0, 1, ns)
-        data['y_distribution'] = np.linspace(0, 1, ns)
+        for sample in samples:
+            # density p(x) (Equation 3)
+            _iter_data['x_density'] *= (1 - alpha) + (alpha * self.bivariate_copula(_iter_data['x_distribution'], sample))
 
-        # Calculate density
-        density = 1 / ns
+            # Cumulative Distribution P(x) (Equation 4)
+            _iter_data['x_distribution_last_sample'] = _iter_data['x_distribution'] #Store for next sample.
+            _iter_data['x_distribution'] = self._update_dist(alpha, sample, _iter_data['x_distribution'])
 
-        # Update x_density with the calculated density
-        data['x_density'] = np.full(ns, density)
+            # y_density p(y | x) (Equation 12)
+            _iter_data['y_density'] = self._update_dist(alpha, _iter_data['y_distribution'], sample)
+
+        return _iter_data
+
+    
+    def initialise_recursions(self, ns: int, distribution_type: str = 'uniform'):
+        """
+        Initializes with either a Uniform or Cauchy Distribution.
+
+        Parameters:
+        - ns: int, number of samples.
+        - distribution_type: str, either 'uniform' or 'cauchy' to choose the initialization type.
+
+        Returns:
+        - data: dict, initialized data with specified distribution type.
+        """
+        if distribution_type == 'cauchy':
+            x_values = np.linspace(0, 1, ns)
+            data = {
+                'x_density': cauchy.pdf(x_values),
+                'x_distribution': cauchy.cdf(x_values),
+                'x_distribution_n': cauchy.cdf(x_values),
+                'y_distribution': cauchy.cdf(x_values),
+                }
+        elif distribution_type == 'uniform':
+            # Uniform distribution initialization with a simplified approach.
+            # TODO: Fix this
+            data = {
+                'x_density': uniform.pdf(ns, 1 / ns),
+                'x_distribution': uniform.cdf(0, 1, ns),
+                'x_distribution_n': uniform.cdf(0, 1, ns),
+                'y_distribution': uniform.cdf(0, 1, ns),
+                }
+        else:
+            raise ValueError(f"initialise_recursions: Distribution_type must be 'uniform' or 'cauchy', but is {distribution_type}.")
         return data
 
 
@@ -134,10 +174,20 @@ class QuasiBayesianVineRegression(BaseEstimator, RegressorMixin):
             - Marginal Distributions (P_n)
         Output:
             - c: Copula 
+        
+        Purpose: 
+            The final vine copula in Equations (10) and (11) models the full multivariate 
+            dependency structure, integrating all dimensions via a vine structure composed 
+            of several bivariate copulas in a tree-based hierarchy.
+        Implementation: 
+            The vine copula structure is distinct because it builds upon multiple layers 
+            of pairwise copulas with a hierarchy, enabling high-dimensional dependency modeling. 
+        Why Seperate Copulas?    
+            This requires a dedicated structure that aggregates multiple conditional copulas 
+            across trees, which is computationally intensive and designed separately from the 
+            simpler updates used in Equations (2) and (4).
         """
         copula_model = pv.Vinecop(data=marg_dists)
-
-        copula_density = copula_model.pdf(marg_dists)
 
         return copula_model
 
@@ -152,6 +202,7 @@ class QuasiBayesianVineRegression(BaseEstimator, RegressorMixin):
             dist_j: Marginal distribution P_j
         Output:
             c_ij: Pairwise copula value between P_i and P_j
+        # NOTE: Not in Use yet.
         """
         # TODO: Implement Actual KDE-based copula estimation here (Equation 11)
         # THIS EQUATION IS A PLACEHOLDER!
@@ -198,7 +249,7 @@ class QuasiBayesianVineRegression(BaseEstimator, RegressorMixin):
     def predict_sample(self, _X, _iters:int=1000):
         """
         Equation 12.
-        Predict the probability density for y given input X.
+        Predict the probability density for y given single sample input X.
         
         Parameters:
         -----------
