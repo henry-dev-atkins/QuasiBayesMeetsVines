@@ -30,10 +30,7 @@ class QuasiBayesianVineRegression(BaseEstimator, RegressorMixin):
             dependency values as per Equation 2, which cannot directly reuse the full vine 
             structure or KDE components.
         """
-        print(cdf_y)
-        print(cdf_x.shape, cdf_y.shape)
         data = np.vstack((cdf_x, cdf_y)).T
-        print(data.shape)
         bicop_model = pv.Bicop()
         bicop_model.select(data=data)
                 
@@ -65,6 +62,8 @@ class QuasiBayesianVineRegression(BaseEstimator, RegressorMixin):
             This implementation should ideally not be combined with the vine copula but instead 
             remain focused on conditioning for cumulative distributions.
         """
+        print(cdf_x)
+        print(cdf_y)
         data = np.vstack((cdf_x, cdf_y)).T
         bicop_model = pv.Bicop()
         bicop_model.select(data=data)
@@ -81,22 +80,51 @@ class QuasiBayesianVineRegression(BaseEstimator, RegressorMixin):
         _term1 = (1 - al) * p_x
         term_2 = al * self.conditional_copula(p_x, p_xn)
         return _term1 + term_2
-        
 
-    def apply_recursion(self, alpha, samples, initial_density, initial_distribution, initial_y_dist):
+
+    def initialise_recursions(self, N: int = 2, distribution_type: str = 'uniform'):
+        """
+        Initializes with either a Uniform or Cauchy Distribution.
+
+        Parameters:
+        - N: int, number of samples to sim.
+        - distribution_type: str, either 'uniform' or 'cauchy' to choose the initialization type.
+
+        Returns:
+        - data: dict, initialized data with specified distribution type.
+        """
+        if distribution_type == 'cauchy':
+            #TODO: Check range
+            x_values = np.linspace(-10, 10, N)
+            data = {
+                'x_density': cauchy.pdf(x_values),
+                'x_distribution': cauchy.cdf(x_values),
+                'x_distribution_n': cauchy.cdf(x_values),
+                'y_distribution': cauchy.cdf(x_values),
+            }
+        elif distribution_type == 'uniform':
+            data = {
+                'x_density': np.ones(N),
+                'x_distribution': np.sort(np.random.uniform(0, 1, N)),
+                'x_distribution_n': np.sort(np.random.uniform(0, 1, N)),
+                'y_distribution': np.sort(np.random.uniform(0, 1, N))
+                }
+            for key, value in data.items():
+                print(key, value.shape)
+        else:
+            raise ValueError(f"initialise_recursions: Distribution_type must be 'uniform' or 'cauchy', but is {distribution_type}.")
+
+        return data
+
+    def recurse_samples(self, alpha, samples):
         """
         Applies sample-wise recursion to update the distribution and density functions.
         """
-        _iter_data = {
-            'x_density':                  initial_density,
-            'x_distribution':             initial_distribution,
-            'x_distribution_last_sample': initial_distribution,
-            'y_distribution':             initial_y_dist,
-            'y_density':                  initial_y_dist,
-            }
+        _iter_data = self.initialise_recursions()
 
         for sample in samples:
             # density p(x) (Equation 3)
+            sample = np.array([sample])
             print("Samples:", _iter_data['x_distribution'].shape, sample.shape)
             _iter_data['x_density'] *= (1 - alpha) + (alpha * self.bivariate_copula(_iter_data['x_distribution'], sample))
 
@@ -109,43 +137,8 @@ class QuasiBayesianVineRegression(BaseEstimator, RegressorMixin):
 
         return _iter_data
 
-    
-    def initialise_recursions(self, ns: int, distribution_type: str = 'uniform'):
-        """
-        Initializes with either a Uniform or Cauchy Distribution.
 
-        Parameters:
-        - ns: int, number of samples.
-        - distribution_type: str, either 'uniform' or 'cauchy' to choose the initialization type.
-
-        Returns:
-        - data: dict, initialized data with specified distribution type.
-        """
-        if distribution_type == 'cauchy':
-            #TODO: Check range
-            x_values = np.linspace(-10, 10, ns)
-            data = {
-                'x_density': cauchy.pdf(x_values),
-                'x_distribution': cauchy.cdf(x_values),
-                'x_distribution_n': cauchy.cdf(x_values),
-                'y_distribution': cauchy.cdf(x_values),
-            }
-        elif distribution_type == 'uniform':
-            data = {
-                'x_density': np.ones(ns).reshape(1, 1),
-                'x_distribution': np.sort(np.random.uniform(0, 1, ns)),
-                'x_distribution_n': np.sort(np.random.uniform(0, 1, ns)),
-                'y_distribution': np.sort(np.random.uniform(0, 1, ns))
-                }
-            for key, value in data.items():
-                print(key, value.shape)
-        else:
-            raise ValueError(f"initialise_recursions: Distribution_type must be 'uniform' or 'cauchy', but is {distribution_type}.")
-
-        return data
-
-
-    def recurse_marginals(self, data: np.ndarray):
+    def get_marginals(self, data: np.ndarray):
         """
         Get Marginal Densities and Distributions.
         Iterate Equations (3) and (4) from paper.
@@ -154,19 +147,14 @@ class QuasiBayesianVineRegression(BaseEstimator, RegressorMixin):
             - data: The dataset with shape (n_samples, n_features)
 
         Output:
-            - marginals_x: A dictionary containing updated marginal densities and distributions
+            - marginals: dict, containing the marginal distributions and densities for each dimension.
         """
-        ns = data.shape[1]  # number of dimensions
-        marginals = {0: self.initialise_recursions(ns)}
+        dimensions = data.shape[1]
+        marginals = {}
 
-        for n in range(1, ns):
-            last_dist = marginals[n-1]['x_distribution']
-            last_n_dists = marginals[n-1]['x_distribution_n']
-            last_density = marginals[n-1]['x_density']
-            last_y_dist = marginals[n-1]['y_distribution']
+        for n in range(0, dimensions):
             alpha_n = (2 - (n^-1)) * (1 / (1+n))
-            marginals[n] = self.apply_recursion(alpha_n, last_dist, last_n_dists, last_density, last_y_dist)
-
+            marginals[n] = self.recurse_samples(alpha_n, samples=data[:, n])
         return marginals
 
 
@@ -232,7 +220,7 @@ class QuasiBayesianVineRegression(BaseEstimator, RegressorMixin):
 
         # Recursive Marginals
         _recursive_data = np.hstack((X, y))
-        marginals = self.recurse_marginals(_recursive_data)
+        marginals = self.get_marginals(_recursive_data)
         final_marginals = marginals[X.shape[1]]
 
         # Estimate Copula for Combining the Marginals.
@@ -244,7 +232,7 @@ class QuasiBayesianVineRegression(BaseEstimator, RegressorMixin):
         self.model = {
             'joint_copula': joint_copula,
             'x_copula': x_copula,
-            'y_marginal': gaussian_kde(final_marginals['y_distribution']),
+            'y_marginal': final_marginals['y_distribution'],
             'y_max': y.max(),
             'y_min': y.min()
             }
