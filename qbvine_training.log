@@ -1,0 +1,15 @@
+2024-11-12 20:33:01,069 - INFO - Starting model fitting.
+2024-11-12 20:33:01,069 - INFO - Starting data preprocessing.
+2024-11-12 20:33:01,071 - INFO - Data preprocessing completed.
+2024-11-12 20:33:01,083 - INFO - Generating 10 permutations.
+2024-11-12 20:33:05,317 - INFO - Permutations generated.
+2024-11-12 20:33:05,317 - INFO - Starting grid search for optimal theta.
+2024-11-12 20:53:22,004 - INFO - Grid search completed.
+2024-11-12 20:53:22,005 - INFO - Theta optimization completed.
+2024-11-12 20:53:22,006 - INFO - Optimal thetas extracted.
+2024-11-12 20:53:22,006 - INFO - Building context.
+2024-11-12 20:53:22,030 - INFO - Context building completed.
+2024-11-12 20:53:22,031 - INFO - Starting copula fitting, on data with max: 0.9999899864196777 and min: 9.999999747378752e-06.
+2024-11-12 20:53:22,768 - INFO - Copula fitting completed.
+2024-11-12 20:53:22,768 - INFO - Model fitting completed.
+2024-11-12 20:53:22,768 - INFO - Saving model to _tmp_model/qb_vine_model.pkl.

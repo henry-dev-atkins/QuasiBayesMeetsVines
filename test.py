@@ -4,17 +4,19 @@ from sklearn import datasets
 from sklearn.preprocessing import MinMaxScaler
 
 data = datasets.load_wine(as_frame=True)['data']
-mms = MinMaxScaler()
-data = pd.DataFrame(mms.fit_transform(data), columns=data.columns)[:100]
+mms = MinMaxScaler(feature_range=(0.00001, 0.99999))
+data = pd.DataFrame(mms.fit_transform(data), columns=data.columns)
+
+X = data.iloc[:, :-1]
+y = data.iloc[:, -1]
 
 model = QBV(init_dist='Cauchy', perm_count=10, train_frac=0.8, seed=42)
-model.fit(data)
+model.fit(X, y)
 
-test_data = pd.read_csv('datasets/wine.data')
+model.save_model('_tmp_model/qb_vine_model.pkl')
+print("Model saved as _tmp_model/qb_vine_model.pkl")
+model = QBV().load_model('_tmp_model/qb_vine_model.pkl')
 
-test_dens, cop_dens_xy = model.predict(test_data)
+test_dens, cop_dens_xy = model.predict(data)
 print("Test Densities:", test_dens)
 print("Copula Log-Likelihood:", cop_dens_xy)
-
-model.save_model('qb_vine_model.pkl')
-print("Model saved as qb_vine_model.pkl")
