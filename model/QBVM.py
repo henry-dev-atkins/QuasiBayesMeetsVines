@@ -67,9 +67,8 @@ class QBV:
         logger.info("Model fitting completed.")
 
 
-    def _optimize_theta(self, y_permutations):
+    def _optimize_theta(self, y_permutations, size=50):
         logger.info("Starting grid search for optimal theta.")
-        size = 50
         theta_grids = torch.linspace(0.1, 0.99, size).contiguous()
 
         def optimize_for_grid(grid):
@@ -90,9 +89,8 @@ class QBV:
         return get_context(_permutations, optimum_thetas, init_dist=self.init_dist)
 
 
-    def _fit_copulas(self, y_train, y_test, optimum_thetas):
+    def _fit_copulas(self, y_train, y_test, optimum_thetas, optband_xy = 3.0):
         logger.info(f"Starting copula fitting, on data with max: {y_train.max().item()} and min: {y_train.min().item()}.")
-        optband_xy = 3.0
         controls_xy = pv.FitControlsVinecop(
                                             family_set=[pv.BicopFamily.tll],
                                             selection_criterion='mbic',
