@@ -107,10 +107,12 @@ class QBV:
         Save the model, including the copula and necessary marginals.
         """
         logger.info(f"Saving model to {filename}.")
-
+        
         copula_file = filename + '_copula.json'
+        filename = filename + '.pkl'
+        
         self.model_params['cop_xy'].to_json(copula_file)
-
+        
         model_data = {
             'init_dist': self.init_dist,
             'perm_count': self.perm_count,
@@ -120,16 +122,20 @@ class QBV:
                 'optimum': self.model_params['optimum'].tolist()
             },
             'context': self.context.cpu().numpy().tolist(),
-            'mean_y': self.mean_y,
-            'std_y': self.std_y,
+            'mean_y': self.mean_y.tolist(),
+            'std_y': self.std_y.tolist(),
             'copula_file': copula_file
-            }
-
-        os.makedirs(os.path.dirname(filename), exist_ok=True)
+        }
+        
+        directory = os.path.dirname(filename)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        
         with open(filename, 'wb') as f:
             pickle.dump(model_data, f)
         
         logger.info("Model saved successfully, including copula JSON.")
+
 
 
 
@@ -139,29 +145,33 @@ class QBV:
         Load the model, including the copula and necessary marginals.
         """
         logger.info(f"Loading model from {filename}.")
-
+        
+        if not filename.endswith('.pkl'):
+            filename += '.pkl'
+        
         with open(filename, 'rb') as f:
             model_data = pickle.load(f)
-
-        copula_model = pv.Vinecop.from_json(model_data['copula_file'])
-
+        
+        copula_model = pv.Vinecop(model_data['copula_file'])
+        
         model = QBV(
             init_dist=model_data['init_dist'],
             perm_count=model_data['perm_count'],
             train_frac=model_data['train_frac'],
             seed=model_data['seed']
-            )
+        )
         
         model.model_params = {
             'cop_xy': copula_model,
             'optimum': torch.tensor(model_data['model_params']['optimum'])
-            }
+        }
         model.context = torch.tensor(model_data['context'])
-        model.mean_y = torch.tensor(model_data['mean_y'])
-        model.std_y = torch.tensor(model_data['std_y'])
+        model.mean_y = None #torch.tensor(model_data['mean_y'])
+        model.std_y = None #torch.tensor(model_data['std_y'])
         
         logger.info("Model loaded successfully, including copula.")
         return model
+
 
 
     def predict(self, X_test):
@@ -183,14 +193,16 @@ class QBV:
             raise RuntimeError("Model not fitted. Fit the model before prediction.")
 
         rhovec = self.model_params['optimum']
+        
         test_dens, test_cdfs = evaluate_prcopula(X_test, self.context, rhovec, init_dist=self.init_dist)
 
+        
         cop_xy = self.model_params['cop_xy']
         loglik_xy = torch.tensor(cop_xy.loglik(test_cdfs.numpy()))
 
-        # Post-processing: Compute joint densities and final scores
-        joint_dens = test_dens.prod(dim=1)  # Product of marginal densities for each row
-        final_score = torch.log(joint_dens) + loglik_xy  # Combine with copula log-likelihood
+        joint_dens = torch.exp(loglik_xy) * test_dens.prod(dim=1)
+
+        final_score = torch.log(joint_dens)
 
         logger.info("Prediction with post-processing completed.")
         return {

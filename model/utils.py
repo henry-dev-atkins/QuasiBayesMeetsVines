@@ -142,14 +142,24 @@ def evaluate_prcopula(test_points, context, rhovec, init_dist='Normal', a=1.):
     num_evals, num_dim = test_points.shape
     num_perm, num_data, _ = context.shape
     dens = torch.zeros([num_perm, num_evals, num_dim])
+    cdfs = torch.zeros([num_perm, num_evals, num_dim])
+
     for j in range(num_dim):
         for perm in range(num_perm):
-            cdf = (torch.distributions.Normal(0, 1).cdf(test_points[:, j])
-                   if init_dist == 'Normal' else None)
+            if init_dist == 'Normal':
+                cdf = torch.distributions.Normal(0, 1).cdf(test_points[:, j])
+            elif init_dist == 'Cauchy':
+                cdf = torch.distributions.Cauchy(0, 1).cdf(test_points[:, j])
+            else:
+                raise ValueError(f"Unsupported init_dist: {init_dist}")
             cdf = torch.clip(cdf, 1e-6, 1 - 1e-6)
-            for k in range(num_data):
-                dens[perm, :, j] = 1  # Placeholder for real density computation
-    return torch.mean(dens, dim=0)
+            cdfs[perm, :, j] = cdf
 
+            # Compute the copula density using cGC_distribution
+            copula_density = cGC_distribution(rho=rhovec[j], u=cdf, v=context[perm, :, j])
+            
+            # Correct density computation
+            marginal_density = torch.distributions.Normal(0, 1).log_prob(test_points[:, j]).exp()
+            dens[perm, :, j] = marginal_density * copula_density
 
-
+    return dens, cdfs

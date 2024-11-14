@@ -11,12 +11,13 @@ X = data.iloc[:, :-1]
 y = data.iloc[:, -1]
 
 model = QBV(init_dist='Cauchy', perm_count=2, train_frac=0.8, seed=42)
-model.fit(X, y)
+##model.fit(X, y)
+# model.save_model('qb_vine_model')
 
-model.save_model('_tmp_model/qb_vine_model.pkl')
-print("Model saved as _tmp_model/qb_vine_model.pkl")
-model = QBV().load_model('_tmp_model/qb_vine_model.pkl')
 
-test_dens, cop_dens_xy = model.predict(data)
-print("Test Densities:", test_dens)
-print("Copula Log-Likelihood:", cop_dens_xy)
+model = QBV().load_model('qb_vine_model')
+
+preds = model.predict(data)
+print("Test Densities:", preds['marginal_densities'])
+print("joint_densities:", preds['joint_densities'])
+print("Scores:", preds['final_scores'])
