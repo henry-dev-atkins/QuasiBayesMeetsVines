@@ -1,8 +1,0 @@
-
-numpy==1.26.4
-scipy==1.13.1
-pandas==2.2.2
-matplotlib==3.7.1
-scikit-learn==1.5.2
-pyvinecopulib==0.6.7
-copulas==0.11.1
