@@ -9,10 +9,10 @@ data = datasets.load_wine(as_frame=True)['data']
 X = data.iloc[:, :-1]
 y = data.iloc[:, -1]
 
-model = QBV(init_dist='Cauchy', perm_count=20, train_frac=0.8, seed=42)
-model.fit(X, y, theta_iterations=2)
+#model = QBV(init_dist='Cauchy', perm_count=20, train_frac=0.8, seed=42)
+#model.fit(X, y, theta_iterations=2)
 
-model.save_model('qb_vine_model')
+#model.save_model('qb_vine_model')
 
 model = QBV().load_model('qb_vine_model')
 print(f"X shape: {X.shape}")

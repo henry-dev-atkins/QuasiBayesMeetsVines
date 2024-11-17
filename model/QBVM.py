@@ -216,6 +216,27 @@ def alpha(step: int) -> float:
 
 
 def torch_ecdf(torch_data: torch.Tensor) -> torch.Tensor:
+    """
+    Compute the empirical cumulative distribution function (ECDF) for each column of the input tensor.
+
+    This function calculates the ECDF for each column of the input tensor and returns the result as a tensor.
+
+    Parameters:
+    ----------
+    torch_data : torch.Tensor
+        The input data tensor.
+
+    Returns:
+    -------
+    torch.Tensor
+        A tensor containing the ECDF values for each column of the input tensor.
+
+    Notes:
+    -----
+    - The input tensor is converted to a NumPy array and then to a pandas DataFrame for easier manipulation.
+    - The `rankdata` function from `scipy.stats` is used to compute the ECDF values.
+    - The ECDF values are scaled by dividing by the number of observations plus one to ensure they are in the range (0, 1).
+    """
     data = torch_data.detach().numpy()
     data = pd.DataFrame(data)
     pobs = {}
@@ -237,6 +258,38 @@ def cdf_std_normal(input: torch.Tensor) -> torch.Tensor:
 
 def linear_energy_grid_search(observations: torch.Tensor, rhovec: torch.Tensor, beta: float = 0.5, 
                               size: int = 1000, init_dist: str = 'Normal', a: float = 1.) -> torch.Tensor:
+    """
+    Perform a grid search to compute the Energy Score for each dimension of the observations.
+
+    This function generates grid points and computes the cumulative distribution functions (CDFs) for each dimension of the observations. It then interpolates these CDFs and calculates the Energy Score for each dimension using the specified parameters.
+
+    Parameters:
+    ----------
+    observations : torch.Tensor
+        The observed data tensor with shape (num_perm, num_data, num_dim).
+    rhovec : torch.Tensor
+        The correlation coefficients tensor for the copula.
+    beta : float, optional
+        The power parameter for scaling the Euclidean distance in the Energy Score (default is 0.5).
+    size : int, optional
+        The number of grid points to generate (default is 1000).
+    init_dist : str, optional
+        The initial distribution to use ('Normal' or 'Cauchy') (default is 'Normal').
+    a : float, optional
+        The shape parameter for the Lomax distribution (default is 1.0).
+
+    Returns:
+    -------
+    torch.Tensor
+        The computed Energy Scores for each dimension.
+
+    Notes:
+    -----
+    - The function uses the `generate_CDFs` function to compute the initial CDFs for the observations.
+    - The `grids_cdfs` function is used to generate grid points and corresponding CDFs.
+    - The `xi.Interp1D` function is used to interpolate the CDFs.
+    - The `Energy_Score_pytorch` function is used to compute the Energy Score for each dimension.
+    """
     ctxtmat = generate_CDFs(observations=observations, init_dist=init_dist, a=a)
     scores = torch.zeros([observations.shape[2]])
     sams = torch.rand([100, observations.shape[2]])
@@ -265,6 +318,37 @@ def linear_energy_grid_search(observations: torch.Tensor, rhovec: torch.Tensor, 
 
 
 def generate_CDFs(observations: torch.Tensor, init_dist: str = 'Normal', a: float = 1.) -> torch.Tensor:
+    """
+    Evaluate the probabilistic copula model for given observations and CDFs.
+
+    This function calculates the densities and CDFs for a probabilistic copula model based on the given observations, initial CDFs, and correlation coefficients.
+
+    Parameters:
+    ----------
+    obs : torch.Tensor
+        The observed data tensor with shape (num_evals, num_dim).
+    cdfs : torch.Tensor
+        The initial CDF values tensor with shape (num_perm, num_data, num_dim).
+    vec_of_rho : torch.Tensor
+        The correlation coefficients tensor for the copula.
+    init_dist : str, optional
+        The initial distribution to use ('Normal' or 'Cauchy') (default is 'Normal').
+    a : float, optional
+        The shape parameter for the Lomax distribution (default is 1.0).
+
+    Returns:
+    -------
+    Tuple[torch.Tensor, torch.Tensor]
+        A tuple containing:
+        - densities: The computed densities for each permutation and evaluation.
+        - cdfs: The computed CDFs for each permutation and evaluation.
+
+    Notes:
+    -----
+    - The function supports different initial distributions: 'Normal' and 'Cauchy'.
+    - The CDF values are clipped to the range [1e-6, 1 - 1e-6] to avoid boundary issues.
+    - The joint copula density is computed across dimensions for each permutation.
+    """
     # TODO: Should there be a theta/rho/correlation consideration here?
     num_perm, num_data, num_dim = observations.shape
     cdfs = torch.zeros([num_perm, num_data, num_dim])
@@ -283,6 +367,37 @@ def generate_CDFs(observations: torch.Tensor, init_dist: str = 'Normal', a: floa
 
 def evaluate_prcopula(obs: torch.Tensor, cdfs: torch.Tensor, vec_of_rho: torch.Tensor, 
                       init_dist: str = 'Normal', a: float = 1.) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Evaluate the probabilistic copula model for given observations and CDFs.
+
+    This function calculates the densities and CDFs for a probabilistic copula model based on the given observations, initial CDFs, and correlation coefficients.
+
+    Parameters:
+    ----------
+    obs : torch.Tensor
+        The observed data tensor with shape (num_evals, num_dim).
+    cdfs : torch.Tensor
+        The initial CDF values tensor with shape (num_perm, num_data, num_dim).
+    vec_of_rho : torch.Tensor
+        The correlation coefficients tensor for the copula.
+    init_dist : str, optional
+        The initial distribution to use ('Normal' or 'Cauchy') (default is 'Normal').
+    a : float, optional
+        The shape parameter for the Lomax distribution (default is 1.0).
+
+    Returns:
+    -------
+    Tuple[torch.Tensor, torch.Tensor]
+        A tuple containing:
+        - densities: The computed densities for each permutation and evaluation.
+        - cdfs: The computed CDFs for each permutation and evaluation.
+
+    Notes:
+    -----
+    - The function supports different initial distributions: 'Normal' and 'Cauchy'.
+    - The CDF values are clipped to the range [1e-6, 1 - 1e-6] to avoid boundary issues.
+    - The joint copula density is computed across dimensions for each permutation.
+    """
     num_evals, num_dim = obs.shape
     num_perm, num_data, _ = cdfs.shape
     densities = torch.zeros([num_perm, num_evals])
@@ -390,7 +505,7 @@ class QBV:
         if data.shape[1] < 2:
             raise ValueError("Data has less than 2 columns.")
         
-        # TODO: this has lookahead bias!
+        # FIXME: this order of minmax then split has lookahead bias!
         data = self._minmax(data)
         train_data, test_data = train_test_split(
                                                 data, 
@@ -402,6 +517,27 @@ class QBV:
 
 
     def fit(self, X: pd.DataFrame, y: pd.Series, theta_iterations: int = 50) -> None:
+        """
+        Compute the empirical cumulative distribution function (ECDF) for each column of the input tensor.
+
+        This function calculates the ECDF for each column of the input tensor and returns the result as a tensor.
+
+        Parameters:
+        ----------
+        torch_data : torch.Tensor
+            The input data tensor.
+
+        Returns:
+        -------
+        torch.Tensor
+            A tensor containing the ECDF values for each column of the input tensor.
+
+        Notes:
+        -----
+        - The input tensor is converted to a NumPy array and then to a pandas DataFrame for easier manipulation.
+        - The `rankdata` function from `scipy.stats` is used to compute the ECDF values.
+        - The ECDF values are scaled by dividing by the number of observations plus one to ensure they are in the range (0, 1).
+        """
         self.logger.info("Starting model fitting.")
         start_time = time.time()
         
@@ -423,7 +559,7 @@ class QBV:
         scores_dic = self._optimise_theta(_permutations, size=theta_iterations)
         self.logger.info(f"Theta optimization completed in {time.time() - optimize_start:.2f} seconds.")
         
-        optimum_thetas = self._extract_optimal_thetas(scores_dic)
+        optimum_thetas = self.torch.argmin(scores_dic, dim=0)
         self.logger.debug(f"Optimal thetas: {optimum_thetas}")
         self.logger.info("Optimal thetas extracted.")
         
@@ -436,12 +572,34 @@ class QBV:
         self.model_params = self._fit_copulas(_train, optimum_thetas)
         self.logger.debug(f"Copula parameters: {self.model_params['cop_xy'].parameters}")
         self.logger.info(f"Model fitting completed in {time.time() - fit_copula_start:.2f} seconds.")
-        
-        self.logger.info(f"Total model fitting time: {time.time() - start_time:.2f} seconds.")
+        return 
 
 
 
     def _optimise_theta(self, y_permutations: torch.Tensor, size: int) -> torch.Tensor:
+        """
+        Perform a grid search to optimize theta values.
+
+        This function performs a grid search to find the optimal theta values by computing the Energy Score for each grid point. It uses parallel processing to speed up the computation.
+
+        Parameters:
+        ----------
+        y_permutations : torch.Tensor
+            The tensor of permuted training data with shape (num_perm, num_data, num_dim).
+        size : int
+            The number of grid points to generate for the grid search.
+
+        Returns:
+        -------
+        torch.Tensor
+            A tensor containing the Energy Scores for each grid point.
+
+        Notes:
+        -----
+        - The function logs the progress and the grid values being optimized.
+        - The `linear_energy_grid_search` function is used to compute the Energy Score for each grid point.
+        - The `torch.linspace` function is used to generate the grid points for theta values.
+        """
         self.logger.info("Starting grid search for optimal theta.")
         # TODO: Shouldn't this be 0.01?
         theta_grids = torch.linspace(0.1, 0.99, size).contiguous()
@@ -455,23 +613,42 @@ class QBV:
         return scores_dic
 
 
-    def _extract_optimal_thetas(self, scores_dic: torch.Tensor) -> torch.Tensor:
-        """
-        From the grid search results, return the optimal theta values.
-        """
-        return torch.argmin(scores_dic, dim=0)
-
-
     def _build_cdf_permutations(self, _permutations: torch.Tensor, optimum_thetas: torch.Tensor) -> torch.Tensor:
         """
         From the permutations and optimal thetas, build the CDFs.
         # TODO: Do we need the optimum_thetas to generate CDFs?
+        # TODO: Should we be using the same permutations for all thetas?
+        # TODO: Is this func (as it stands) necessary?
         """
         self.logger.info("Building CDFs.")
         return generate_CDFs(observations=_permutations, init_dist=self.init_dist)
 
 
     def _fit_copulas(self, _data: torch.Tensor, optimum_thetas: torch.Tensor, optband_xy: float = 3.0) -> Dict[str, Any]:
+        """
+        Fit copulas to the provided data using the optimal theta values.
+
+        This function fits copulas to the provided data using the optimal theta values. It uses the pyvinecopulib library to fit a vine copula model with specified controls.
+
+        Parameters:
+        ----------
+        _data : torch.Tensor
+            The tensor of data to fit the copulas to.
+        optimum_thetas : torch.Tensor
+            The tensor of optimal theta values.
+        optband_xy : float, optional
+            The bandwidth parameter for the nonparametric method (default is 3.0).
+
+        Returns:
+        -------
+        Dict[str, Any]
+            A dictionary containing the fitted copula model and related parameters.
+
+        Notes:
+        -----
+        - The function logs the progress and the range of the data being fitted.
+        - The pyvinecopulib library is used to fit a vine copula model with specified controls.
+        """
         self.logger.info(f"Starting copula fitting, on data with max: {_data.max().item()} and min: {_data.min().item()}.")
         controls_xy = pv.FitControlsVinecop(
                                             family_set=[pv.BicopFamily.tll],
