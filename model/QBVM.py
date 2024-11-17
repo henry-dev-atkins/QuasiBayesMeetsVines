@@ -11,6 +11,8 @@ import pickle
 import os
 from tqdm import tqdm
 from sklearn.preprocessing import MinMaxScaler
+import time
+from typing import Tuple, Dict, Any
 
 
 import torch
@@ -26,35 +28,119 @@ import torch.nn as nn
 from joblib import Parallel, delayed
 
 
-def cGC_distribution(rho, u, v, shift = 0.0, scale = 1.0):
-  upper = inverse_std_normal(u) - rho * inverse_std_normal(v)
-  #upper = inverse_std_normal(u).reshape(len(u), 1) - rho * inverse_std_normal(v)
-  # NOTE: clone & detatch allows grad computation without memory realloc 
-  lower = torch.sqrt((1 - rho ** 2).clone().detach())
-  input = upper / lower
-  return cdf_std_normal(input)
+def cGC_distribution(rho: torch.Tensor, u: torch.Tensor, v: torch.Tensor, shift: float = 0.0, scale: float = 1.0) -> torch.Tensor:
+    """
+    Compute the conditional Gaussian copula (cGC) distribution.
+
+    This function calculates the conditional distribution of a Gaussian copula given two sets of uniform random variables `u` and `v`, and a correlation coefficient `rho`.
+
+    Parameters:
+    ----------
+    rho : torch.Tensor
+        The correlation coefficient tensor between the variables.
+    u : torch.Tensor
+        The first set of uniform random variables.
+    v : torch.Tensor
+        The second set of uniform random variables.
+    shift : float, optional
+        A shift parameter for the distribution (default is 0.0).
+    scale : float, optional
+        A scale parameter for the distribution (default is 1.0).
+
+    Returns:
+    -------
+    torch.Tensor
+        The conditional Gaussian copula distribution values.
+
+    Notes:
+    -----
+    - The function uses the inverse of the standard normal CDF to transform the uniform random variables `u` and `v` to the normal space.
+    - The `clone().detach()` method is used to allow gradient computation without memory reallocation.
+    """
+    upper = inverse_std_normal(u) - rho * inverse_std_normal(v)
+    #upper = inverse_std_normal(u).reshape(len(u), 1) - rho * inverse_std_normal(v)
+    # NOTE: clone & detatch allows grad computation without memory realloc 
+    lower = torch.sqrt((1 - rho ** 2).clone().detach())
+    input = upper / lower
+    return cdf_std_normal(input)
 
 
-def minmax_unif(obs):
-  '''
-  An informative uniform prior whose support is same as data's
-  '''
-  min = torch.min(obs) - 0.001
-  max = torch.max(obs) + 0.001
-  log_pdfs = torch.distributions.uniform.Uniform(min, max).log_prob(obs)
-  cdfs = torch.distributions.uniform.Uniform(min, max).cdf(obs)
-  return cdfs, log_pdfs.exp()
+def minmax_unif(obs: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Compute the CDF and PDF of a uniform distribution with support based on the observed data.
+
+    This function calculates the cumulative distribution function (CDF) and the probability density function (PDF) of a uniform distribution whose support is slightly extended beyond the minimum and maximum values of the observed data.
+
+    Parameters:
+    ----------
+    obs : torch.Tensor
+        The observed data tensor.
+
+    Returns:
+    -------
+    Tuple[torch.Tensor, torch.Tensor]
+        A tuple containing:
+        - cdfs: The cumulative distribution function values for the observed data.
+        - pdfs: The probability density function values for the observed data.
+
+    Notes:
+    -----
+    - The support of the uniform distribution is extended by 0.001 beyond the minimum and maximum values of the observed data to avoid boundary issues.
+    """
+    min = torch.min(obs) - 0.001
+    max = torch.max(obs) + 0.001
+    log_pdfs = torch.distributions.uniform.Uniform(min, max).log_prob(obs)
+    cdfs = torch.distributions.uniform.Uniform(min, max).cdf(obs)
+    return cdfs, log_pdfs.exp()
 
 
-def grids_cdfs(size, cdfs, rhovec, data, extrap_tail = .1, init_dist = 'Normal', a = 1., flt = 1e-6):
-      num_perm = cdfs.shape[0]
-      num_data = cdfs.shape[1]
-      num_dim = cdfs.shape[2]
+def grids_cdfs(size: int, cdfs: torch.Tensor, rhovec: torch.Tensor, data: torch.Tensor, 
+               extrap_tail: float = 0.1, init_dist: str = 'Normal', a: float = 1., flt: float = 1e-6) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Generate grid points and corresponding CDFs for given data and parameters.
 
-      gridmat = torch.zeros([size, num_dim])
-      cdfs = torch.zeros([num_perm, size, num_dim])
+    This function generates grid points and computes the cumulative distribution functions (CDFs) for each dimension of the data, based on the specified initial distribution and correlation coefficients.
 
-      for j in range(num_dim):
+    Parameters:
+    ----------
+    size : int
+        The number of grid points to generate.
+    cdfs : torch.Tensor
+        The initial CDF values for the data.
+    rhovec : torch.Tensor
+        The correlation coefficients for the copula.
+    data : torch.Tensor
+        The observed data tensor.
+    extrap_tail : float, optional
+        The amount to extend the support of the uniform distribution beyond the minimum and maximum values of the observed data (default is 0.1).
+    init_dist : str, optional
+        The initial distribution to use ('Normal', 'Cauchy', 'Lomax', 'Unif') (default is 'Normal').
+    a : float, optional
+        The shape parameter for the Lomax distribution (default is 1.0).
+    flt : float, optional
+        A small value to clip the CDF values to avoid boundary issues (default is 1e-6).
+
+    Returns:
+    -------
+    Tuple[torch.Tensor, torch.Tensor]
+        A tuple containing:
+        - gridmat: The generated grid points for each dimension.
+        - mean_cdfs: The mean CDF values across permutations.
+
+    Notes:
+    -----
+    - The support of the uniform distribution is extended by `extrap_tail` beyond the minimum and maximum values of the observed data to avoid boundary issues.
+    - The function supports different initial distributions: 'Normal', 'Cauchy', 'Lomax', and 'Unif'.
+    - The CDF values are clipped to the range [flt, 1.0 + flt] to avoid boundary issues.
+    """
+    num_perm = cdfs.shape[0]
+    num_data = cdfs.shape[1]
+    num_dim = cdfs.shape[2]
+
+    gridmat = torch.zeros([size, num_dim])
+    cdfs = torch.zeros([num_perm, size, num_dim])
+
+    for j in range(num_dim):
         min = torch.min(data[:,j]) - extrap_tail
         max = torch.max(data[:,j]) + extrap_tail
         xgrids = torch.linspace(min, max, size)
@@ -73,36 +159,63 @@ def grids_cdfs(size, cdfs, rhovec, data, extrap_tail = .1, init_dist = 'Normal',
                 Cop = cGC_distribution(rho = rhovec[j], u = cdf, v = cdfs[perm, k, j]).reshape(size)
                 cdf = (1 - alpha(k+1)) * cdf + alpha(k+1) * Cop
                 cdf = torch.clip(cdf, min=flt, max=1.+flt)
-            cdfs[perm, :, j] = cdf
-      return gridmat, torch.mean(cdfs, dim=0)
+            #NOTE: changed from cdfs[perm, :, j] = cdf
+            cdfs[perm, :, j] += cdf / num_data
+    return gridmat, torch.mean(cdfs, dim=0)
 
 
-def Energy_Score_pytorch(beta, observations_y, simulations_Y):
-        n = len(observations_y)
-        m = len(simulations_Y)
-        # First part |Y-y|. Gives the L2 dist scaled by power beta. Is a vector of length n/one value per location.
-        diff_Y_y = torch.pow(
-                torch.norm(
-                    (observations_y.unsqueeze(1) - simulations_Y.unsqueeze(0)).float(), dim=2, keepdim=True).reshape(-1,1),
-                beta)
-        # Second part |Y-Y'|. 2* because pdist counts only once.
-        diff_Y_Y = 2 * torch.pow(
-            nn.functional.pdist(simulations_Y),
+def Energy_Score_pytorch(beta: float, observations_y: torch.Tensor, simulations_Y: torch.Tensor) -> torch.Tensor:
+    """
+    Compute the Energy Score for a set of observations and simulations.
+
+    This function calculates the Energy Score, which is a measure of the accuracy of probabilistic predictions. It is based on the Euclidean distance between observations and simulations, scaled by a power parameter `beta`.
+
+    Parameters:
+    ----------
+    beta : float
+        The power parameter for scaling the Euclidean distance.
+    observations_y : torch.Tensor
+        The tensor of observed values.
+    simulations_Y : torch.Tensor
+        The tensor of simulated values.
+
+    Returns:
+    -------
+    torch.Tensor
+        The computed Energy Score.
+
+    Notes:
+    -----
+    - The Energy Score is computed as:
+      2 * mean(|Y - y|^beta) - mean(|Y - Y'|^beta)
+      where Y and Y' are independent samples from the predictive distribution.
+    - The `pdist` function from `torch.nn.functional` is used to compute pairwise distances between simulations.
+    """
+    n = len(observations_y)
+    m = len(simulations_Y)
+    # First part |Y-y|. Gives the L2 dist scaled by power beta. Is a vector of length n/one value per location.
+    diff_Y_y = torch.pow(
+            torch.norm(
+                (observations_y.unsqueeze(1) - simulations_Y.unsqueeze(0)).float(), dim=2, keepdim=True).reshape(-1,1),
             beta)
-        Energy = 2 * torch.mean(diff_Y_y) - torch.sum(diff_Y_Y) / (m * (m - 1))
-        return Energy
+    # Second part |Y-Y'|. 2* because pdist counts only once.
+    diff_Y_Y = 2 * torch.pow(
+        nn.functional.pdist(simulations_Y),
+        beta)
+    Energy = 2 * torch.mean(diff_Y_y) - torch.sum(diff_Y_Y) / (m * (m - 1))
+    return Energy
 
 
-def cdf_lomax(x, a):
+def cdf_lomax(x: torch.Tensor, a: float) -> torch.Tensor:
     return 1 - (1 + x) ** (-a)
 
 
-def alpha(step):
+def alpha(step: int) -> float:
     i = step
     return torch.tensor((2 - 1 / i) * (1 / (i + 1)), dtype=torch.float32)
 
 
-def torch_ecdf(torch_data):
+def torch_ecdf(torch_data: torch.Tensor) -> torch.Tensor:
     data = torch_data.detach().numpy()
     data = pd.DataFrame(data)
     pobs = {}
@@ -113,21 +226,22 @@ def torch_ecdf(torch_data):
     return torch.tensor(np.array(pobs), dtype=torch.float32)
 
 
-def inverse_std_normal(cumulative_prob):
+def inverse_std_normal(cumulative_prob: torch.Tensor) -> torch.Tensor:
     cumulative_prob_doube = torch.clip(cumulative_prob.double(), 1e-6, 1 - 1e-6)
     return torch.erfinv(2 * cumulative_prob_doube - 1) * torch.sqrt(torch.tensor(2.0))
 
 
-def cdf_std_normal(input):
+def cdf_std_normal(input: torch.Tensor) -> torch.Tensor:
     return torch.clamp(torch.distributions.Normal(0, 1).cdf(input), 1e-6, 1 - 1e-6)
 
 
-def linear_energy_grid_search(observations, rhovec, beta=0.5, size=1000, init_dist='Normal', a=1.):
-    ctxtmat = get_CDFs(observations=observations, init_dist=init_dist, a=a)
+def linear_energy_grid_search(observations: torch.Tensor, rhovec: torch.Tensor, beta: float = 0.5, 
+                              size: int = 1000, init_dist: str = 'Normal', a: float = 1.) -> torch.Tensor:
+    ctxtmat = generate_CDFs(observations=observations, init_dist=init_dist, a=a)
     scores = torch.zeros([observations.shape[2]])
     sams = torch.rand([100, observations.shape[2]])
 
-    def compute_dimension(dim):
+    def compute_dimension(dim: int) -> torch.Tensor:
         gridmatrix, gridcdf = grids_cdfs(
                                         size,
                                         ctxtmat,
@@ -146,14 +260,11 @@ def linear_energy_grid_search(observations, rhovec, beta=0.5, size=1000, init_di
                                     observations[0, :, dim].reshape([-1, 1]),
                                     inv(sams[:, dim].contiguous()).reshape([-1, 1])
                                     )
-
     scores = torch.tensor(Parallel(n_jobs=-1)(delayed(compute_dimension)(dim) for dim in range(observations.shape[2])))
-
-
     return scores
 
 
-def get_CDFs(observations, init_dist='Normal', a=1.):
+def generate_CDFs(observations: torch.Tensor, init_dist: str = 'Normal', a: float = 1.) -> torch.Tensor:
     # TODO: Should there be a theta/rho/correlation consideration here?
     num_perm, num_data, num_dim = observations.shape
     cdfs = torch.zeros([num_perm, num_data, num_dim])
@@ -170,7 +281,8 @@ def get_CDFs(observations, init_dist='Normal', a=1.):
     return cdfs
 
 
-def evaluate_prcopula(obs, cdfs, vec_of_rho, init_dist='Normal', a=1.):
+def evaluate_prcopula(obs: torch.Tensor, cdfs: torch.Tensor, vec_of_rho: torch.Tensor, 
+                      init_dist: str = 'Normal', a: float = 1.) -> Tuple[torch.Tensor, torch.Tensor]:
     num_evals, num_dim = obs.shape
     num_perm, num_data, _ = cdfs.shape
     densities = torch.zeros([num_perm, num_evals])
@@ -224,19 +336,11 @@ def evaluate_prcopula(obs, cdfs, vec_of_rho, init_dist='Normal', a=1.):
 
 ########################################################################################################################################
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[
-        logging.FileHandler("qbvine_training.log"),
-        logging.StreamHandler()
-        ]
-    )
-logger = logging.getLogger(__name__)
+
 
 
 class QBV:
-    def __init__(self, init_dist='Cauchy', perm_count=10, train_frac=0.5, seed=None):
+    def __init__(self, init_dist='Cauchy', perm_count=10, train_frac=0.5, seed=None, verbose=1):
         self.init_dist = init_dist
         self.perm_count = perm_count
         self.train_frac = train_frac
@@ -244,12 +348,22 @@ class QBV:
         self.model_params = {}
         self.cdfs = None
         self.minmax = None
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s - %(levelname)s - %(message)s",
+            handlers=[
+                logging.FileHandler("qbvine_training.log"),
+                logging.StreamHandler()
+                ]
+            )
+        self.logger = logging.getLogger(__name__)
+
 
     def _minmax(self, data):
         """
         Apply MinMax scaling separately to features (X) and target (y).
         """
-        logger.info("Applying MinMax scaling on features (X) and target (y).")
+        self.logger.info("Applying MinMax scaling on features (X) and target (y).")
 
         X, y = data.iloc[:, :-1], data.iloc[:, -1]
         
@@ -257,6 +371,7 @@ class QBV:
         self.minmax_y = MinMaxScaler(feature_range=(0.00001, 0.99999))
         
         X_scaled = self.minmax_X.fit_transform(X)
+        self.logger.debug(f"Scaled X variance: {np.var(X_scaled, axis=0)}")
         y_scaled = self.minmax_y.fit_transform(y.values.reshape(-1, 1))
 
         scaled_data = np.hstack((X_scaled, y_scaled))
@@ -264,8 +379,8 @@ class QBV:
         return scaled_data
 
 
-    def _initialise_training_data(self, data):
-        logger.info("Starting data preprocessing.")
+    def _initialise_training_data(self, data: pd.DataFrame) -> Tuple[torch.Tensor, torch.Tensor]:
+        self.logger.info("Starting data preprocessing.")
         if data.isnull().values.any():
             raise ValueError("Data contains missing values.")
         if data.empty:
@@ -275,64 +390,89 @@ class QBV:
         if data.shape[1] < 2:
             raise ValueError("Data has less than 2 columns.")
         
-
         # TODO: this has lookahead bias!
         data = self._minmax(data)
-        train_data, test_data = train_test_split(data, train_size=self.train_frac, random_state=self.seed)
-
-        logger.info("Data preprocessing completed.")
+        train_data, test_data = train_test_split(
+                                                data, 
+                                                train_size = self.train_frac, 
+                                                random_state = self.seed
+                                                )
+        self.logger.info("Data preprocessing completed.")
         return torch.tensor(train_data, dtype=torch.float32), torch.tensor(test_data, dtype=torch.float32)
 
 
-    def fit(self, X, y, theta_iterations:int=50):
-        logger.info("Starting model fitting.")
+    def fit(self, X: pd.DataFrame, y: pd.Series, theta_iterations: int = 50) -> None:
+        self.logger.info("Starting model fitting.")
+        start_time = time.time()
+        
         _data = pd.concat([X, y], axis=1)
         _train, _test = self._initialise_training_data(_data)
+
+        if _train.numel() == 0:
+            raise ValueError("Training data is empty.")
         
-        logger.info(f"Generating {self.perm_count} permutations.")
+        self.logger.info(f"Generating {self.perm_count} permutations.")
+        perm_start = time.time()
         _permutations = torch.stack(Parallel(n_jobs=-1)(
             delayed(lambda: _train[torch.randperm(_train.shape[0])])() for _ in range(self.perm_count)
             ))
-        logger.info("Permutations generated.")
+        self.logger.debug(f"Permutation variance: {torch.var(_permutations, dim=0)}")
+        self.logger.info(f"Permutations generated in {time.time() - perm_start:.2f} seconds.")
         
+        optimize_start = time.time()
         scores_dic = self._optimise_theta(_permutations, size=theta_iterations)
-        logger.info("Theta optimization completed.")
+        self.logger.info(f"Theta optimization completed in {time.time() - optimize_start:.2f} seconds.")
         
         optimum_thetas = self._extract_optimal_thetas(scores_dic)
-        logger.info("Optimal thetas extracted.")
+        self.logger.debug(f"Optimal thetas: {optimum_thetas}")
+        self.logger.info("Optimal thetas extracted.")
         
+        cdf_start = time.time()
         self.cdfs = self._build_cdf_permutations(_permutations, optimum_thetas)
-        logger.info("CDFs building completed.")
+        self.logger.debug(f"CDFs: {self.cdfs}")
+        self.logger.info(f"CDFs building completed in {time.time() - cdf_start:.2f} seconds.")
         
+        fit_copula_start = time.time()
         self.model_params = self._fit_copulas(_train, optimum_thetas)
-        logger.info("Model fitting completed.")
+        self.logger.debug(f"Copula parameters: {self.model_params['cop_xy'].parameters}")
+        self.logger.info(f"Model fitting completed in {time.time() - fit_copula_start:.2f} seconds.")
+        
+        self.logger.info(f"Total model fitting time: {time.time() - start_time:.2f} seconds.")
 
 
-    def _optimise_theta(self, y_permutations, size:int):
-        logger.info("Starting grid search for optimal theta.")
+
+    def _optimise_theta(self, y_permutations: torch.Tensor, size: int) -> torch.Tensor:
+        self.logger.info("Starting grid search for optimal theta.")
         # TODO: Shouldn't this be 0.01?
         theta_grids = torch.linspace(0.1, 0.99, size).contiguous()
 
         def optimize_for_grid(grid):
-            logger.info(f"Optimizing for grid value: {grid}")
+            self.logger.info(f"Optimizing for grid value: {grid}")
             return linear_energy_grid_search(y_permutations, torch.full((y_permutations.shape[2],), grid), beta=0.5, init_dist=self.init_dist)
 
         scores_dic = torch.stack(Parallel(n_jobs=-1)(delayed(optimize_for_grid)(grid) for grid in theta_grids))
-        logger.info("Grid search completed.")
+        self.logger.info("Grid search completed.")
         return scores_dic
 
 
-    def _extract_optimal_thetas(self, scores_dic):
+    def _extract_optimal_thetas(self, scores_dic: torch.Tensor) -> torch.Tensor:
+        """
+        From the grid search results, return the optimal theta values.
+        """
         return torch.argmin(scores_dic, dim=0)
 
 
-    def _build_cdf_permutations(self, _permutations, optimum_thetas):
-        logger.info("Building CDFs.")
-        return get_CDFs(observations=_permutations, init_dist=self.init_dist)
+    def _build_cdf_permutations(self, _permutations: torch.Tensor, optimum_thetas: torch.Tensor) -> torch.Tensor:
+        """
+        From the permutations and optimal thetas, build the CDFs.
+        # TODO: Do we need the optimum_thetas to generate CDFs?
+        """
+        self.logger.info("Building CDFs.")
+        return generate_CDFs(observations=_permutations, init_dist=self.init_dist)
 
 
-    def _fit_copulas(self, _data, optimum_thetas, optband_xy = 3.0):
-        logger.info(f"Starting copula fitting, on data with max: {_data.max().item()} and min: {_data.min().item()}.")
+    def _fit_copulas(self, _data: torch.Tensor, optimum_thetas: torch.Tensor, optband_xy: float = 3.0) -> Dict[str, Any]:
+        self.logger.info(f"Starting copula fitting, on data with max: {_data.max().item()} and min: {_data.min().item()}.")
         controls_xy = pv.FitControlsVinecop(
                                             family_set=[pv.BicopFamily.tll],
                                             selection_criterion='mbic',
@@ -340,11 +480,11 @@ class QBV:
                                             nonparametric_mult=optband_xy
                                             )
         cop_xy = pv.Vinecop(_data.cpu().numpy(), controls=controls_xy)
-        logger.info("Copula fitting completed.")
+        self.logger.info("Copula fitting completed.")
         return {'cop_xy': cop_xy, 'opt_rhos': optimum_thetas}
 
 
-    def save_model(self, folder_name)->None:
+    def save_model(self, folder_name: str) -> None:
         """
         Save the model, including the copula and necessary marginals, in the specified folder.
                 folder_name/
@@ -352,7 +492,7 @@ class QBV:
             ├── model.pkl             # Model metadata including CDFs and parameters
             ├── min_max_scaler.pkl    # Scaler (min-max normalization)
         """
-        logger.info(f"Saving model to folder: {folder_name}.")
+        self.logger.info(f"Saving model to folder: {folder_name}.")
         os.makedirs(folder_name, exist_ok=True)
 
         copula_file = os.path.join(folder_name, 'copula.json')
@@ -383,10 +523,10 @@ class QBV:
         with open(scaler_y_file, 'wb') as f:
             pickle.dump(self.minmax_y, f)
 
-        logger.info("Model saved successfully, including copula JSON and scaler.")
+        self.logger.info("Model saved successfully, including copula JSON and scaler.")
 
     @staticmethod
-    def load_model(folder_name):
+    def load_model(folder_name: str) -> Any: # TODO: Type?
         """
         Load the model, including the copula and necessary marginals, from the specified folder.
         folder_name/
@@ -394,7 +534,7 @@ class QBV:
             ├── model.pkl             # Model metadata including CDFs and parameters
             ├── min_max_scaler.pkl    # Scaler (min-max normalization)
         """
-        logger.info(f"Loading model from folder: {folder_name}.")
+        
         model_file = os.path.join(folder_name, 'model.pkl')
         scaler_X_file = os.path.join(folder_name, 'min_max_scaler_X.pkl')
         scaler_y_file = os.path.join(folder_name, 'min_max_scaler_y.pkl')
@@ -417,28 +557,29 @@ class QBV:
 
         model.model_params = {
             'cop_xy': copula_model,
-            'opt_rhos': torch.tensor(model_data['model_params']['optimum'])
+            'opt_rhos': torch.tensor(model_data['model_params']['opt_rhos'])
             }
         model.cdfs = torch.tensor(model_data['CDFs'])
         
-        logger.info("Model loaded successfully, including copula and scaler.")
+        model.logger.info("Model loaded successfully, including copula and scaler.")
         return model
 
 
-    def predict(self, X):
+    def predict(self, X: pd.DataFrame) -> pd.DataFrame:
         """
         Predict joint densities or conditional probabilities for input X.
-        
+        NOTE: This is the only func that works with pandas dataframes.
         Args:
-            X (DataFrame): Input test data (unseen points).
+            X (pd.DataFrame): Input test data (unseen points).
 
         Returns:
             Tensor: Joint densities for the test points.
         """
         
-        logger.info("Starting prediction.")
+        self.logger.info("Starting prediction.")
 
         scaled_X = self.minmax_X.transform(X)
+        self.logger.debug(f"Scaled X variance: {np.var(scaled_X, axis=0)}")
 
         test_points = torch.tensor(scaled_X, dtype=torch.float32)
         dens, _ = evaluate_prcopula(
@@ -450,6 +591,6 @@ class QBV:
         averaged_dens = dens.mean(dim=0)
         predictions = self.minmax_y.inverse_transform(averaged_dens.reshape(-1, 1))
         
-        logger.info(f"Prediction completed, shape{predictions.shape} .")
+        self.logger.info(f"Prediction completed with shape: {predictions.shape} and values: {predictions}")
 
-        return predictions
+        return pd.DataFrame(predictions, columns=["Predicted Density"])
