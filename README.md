@@ -1,3 +1,5 @@
+IGNORE ALL FILES EXCEPT requirements, test.py and model/QBVM.py
+
 # QuasiBayesMeetsVines
 Implementation of QuasiBayesMeetsVines Paper.
 
