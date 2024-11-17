@@ -482,6 +482,7 @@ class QBV:
 
         X, y = data.iloc[:, :-1], data.iloc[:, -1]
         
+        # TODO: Review float32 vs closeness to 0 here.
         self.minmax_X = MinMaxScaler(feature_range=(0.00001, 0.99999))
         self.minmax_y = MinMaxScaler(feature_range=(0.00001, 0.99999))
         
@@ -549,8 +550,8 @@ class QBV:
         
         self.logger.info(f"Generating {self.perm_count} permutations.")
         perm_start = time.time()
-        _permutations = torch.stack(Parallel(n_jobs=-1)(
-            delayed(lambda: _train[torch.randperm(_train.shape[0])])() for _ in range(self.perm_count)
+        _permutations = torch.stack(
+            Parallel(n_jobs=-1)(delayed(lambda: _train[torch.randperm(_train.shape[0])])() for _ in range(self.perm_count)
             ))
         self.logger.debug(f"Permutation variance: {torch.var(_permutations, dim=0)}")
         self.logger.info(f"Permutations generated in {time.time() - perm_start:.2f} seconds.")
@@ -765,8 +766,11 @@ class QBV:
                             self.model_params['opt_rhos'], 
                             init_dist=self.init_dist)
 
+        # Can we assume mean will work if dens is not gaussian?
         averaged_dens = dens.mean(dim=0)
         predictions = self.minmax_y.inverse_transform(averaged_dens.reshape(-1, 1))
+
+        #  Add the R-BP step! 
         
         self.logger.info(f"Prediction completed with shape: {predictions.shape} and values: {predictions}")
 
