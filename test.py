@@ -18,9 +18,9 @@ if __name__ == '__main__':
     qbv = QBV(p0_class='Cauchy')
     qbv = qbv.load_model('henryTest')
 
-    y_pred = qbv.predict(X.iloc[:10], 0.000000001, 0.999999999999)
+    y_pred = qbv.predict(X.iloc[:1], 0.000000001, 0.999999999999)
     print(y_pred)
-    y = y[:10]
+    y = y[:1]
     print(y.to_numpy().shape)
     mse = mean_squared_error(y.to_numpy(), y_pred.numpy())
 
