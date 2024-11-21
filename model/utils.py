@@ -151,7 +151,7 @@ def cGC_density(rho, u, v, shift = 0.0, scale = 1.0):
 
 def cGC_distribution(rho, u, v, shift = 0.0, scale = 1.0):
     upper = inverse_std_normal(u).reshape(len(u), 1) - rho * inverse_std_normal(v)
-    lower = torch.sqrt(torch.tensor(1 - rho ** 2))
+    lower = torch.sqrt((1 - rho ** 2).clone().detach())
     input = upper / lower
     return cdf_std_normal(input)
 

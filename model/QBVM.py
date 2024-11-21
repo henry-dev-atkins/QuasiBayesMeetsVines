@@ -154,15 +154,16 @@ class QBV(BaseEstimator, RegressorMixin):
 
         # Compute pseudo-observations and log-likelihood
         ctxt_joint = get_context(joint_data.unsqueeze(0), self.correlations, self.p0_class)
+
         _, pseudo_joint = evaluate_prcopula(joint_data, ctxt_joint, self.correlations, init_dist=self.p0_class)
 
         # Log-likelihood of the joint copula
         joint_loglik = self.copula_xy['copula'].loglik(pseudo_joint)
-
+        print(f"Contexted Shapes: {joint_data.shape}, {ctxt_joint.shape}, pseudo_joint: {pseudo_joint.shape}, {joint_loglik}")
         # Ensure output is a tensor of shape [num_points]
         if not isinstance(joint_loglik, torch.Tensor):
             joint_loglik = torch.tensor(joint_loglik, dtype=torch.float32)
-
+        print(joint_loglik.std())
         return joint_loglik
 
 
@@ -171,10 +172,10 @@ class QBV(BaseEstimator, RegressorMixin):
         Compute the log-likelihood of the marginal copula c(X).
 
         Args:
-        - X: Input data matrix of shape [n_samples, d].
+        - X: Input data matrix of shape [num_points, d].
 
         Returns:
-        - marginal_loglik: Log-likelihood of the marginal copula, shape [n_samples].
+        - marginal_loglik: Log-likelihood of the marginal copula, shape [num_points].
         """
         ctxt_X = get_context(X.unsqueeze(0), self.correlations, self.p0_class)
         _, pseudo_X = evaluate_prcopula(X, ctxt_X, self.correlations, init_dist=self.p0_class)
@@ -214,7 +215,7 @@ class QBV(BaseEstimator, RegressorMixin):
 
 
 
-    def predict(self, X_input: pd.DataFrame, y_min: float = 0 + 1e-10, y_max: float = 1 - 1e-10, num_points: int = 100):
+    def predict(self, X_input: pd.DataFrame, y_min: float = 0 + 1e-10, y_max: float = 1 - 1e-10, num_points: int = 20):
         """
         Predict outcomes for input data using the QB-Vine model.
 
@@ -242,15 +243,16 @@ class QBV(BaseEstimator, RegressorMixin):
         X = torch.tensor(X_input.to_numpy(), dtype=torch.float32)  # Shape: [n_samples, d]
         y_guesses = torch.linspace(y_min, y_max, num_points).unsqueeze(1)  # Shape: [num_points, 1]
 
-        log_p_y = self._sample_marginal(num_points)  # Shape: [num_points]
+        log_p_y = self._sample_marginal(num_samples = num_points)  # p_y Shape: [num_points]
         predictions = []
 
         for sample in X:
             x = sample.unsqueeze(0).repeat(num_points, 1)  # Shape: [num_points, d]
-            joint_loglik = self._likelihood_joint(x, y_guesses)  # Shape: [num_points]
-            marginal_loglik = self._likelihood_x(x)  # Shape: [n_samples]
-            marginal_loglik = marginal_loglik.mean()  # Ensure a scalar value for this row
-
+            joint_loglik = self._likelihood_joint(x=x, y=y_guesses)  # c(X, y) Shape: [num_points]
+            marginal_loglik = self._likelihood_x(X=x)  # c(X) Shape: [num_points]
+            print(f"Shapes: {joint_loglik}, {marginal_loglik}")
+            print(f"STDs  : {joint_loglik.std()}, {marginal_loglik.std()}")
+            
             conditional_loglik = joint_loglik + log_p_y - marginal_loglik
             best_y_index = torch.argmax(conditional_loglik)
             predictions.append(y_guesses[best_y_index].item())
