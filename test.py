@@ -1,34 +1,30 @@
+import numpy as np
 import pandas as pd
+from sklearn.datasets import load_diabetes
+from sklearn.metrics import mean_squared_error
 from model.QBVM import QBV
-from sklearn import datasets
-from sklearn.preprocessing import MinMaxScaler
-import matplotlib.pyplot as plt
+import pickle
 
-data = datasets.load_wine(as_frame=True)['data']
+np.random.seed(42)
 
-X = data.iloc[:, :-1]
-y = data.iloc[:, -1]
+if __name__ == '__main__':
+    df = load_diabetes(return_X_y = False, as_frame = True).frame
+    X, y = df.iloc[:, :-1], df.iloc[:, -1]
 
-#model = QBV(init_dist='Cauchy', perm_count=20, train_frac=0.8, seed=42)
-#model.fit(X, y, theta_iterations=2)
+    #qbv = QBV(p0_class='Cauchy')
+    #qbv.fit(df)
+    #qbv.save_model('henryTest')
 
-#model.save_model('qb_vine_model')
+    qbv = QBV(p0_class='Cauchy')
+    qbv = qbv.load_model('henryTest')
 
-model = QBV().load_model('qb_vine_model')
-print(f"X shape: {X.shape}")
+    y_pred = qbv.predict(X.iloc[:10], 0.000000001, 0.999999999999)
+    print(y_pred)
+    y = y[:10]
+    print(y.to_numpy().shape)
+    mse = mean_squared_error(y.to_numpy(), y_pred.numpy())
 
-preds_df = model.predict(X)
-preds = preds_df.squeeze()
+    qbv.save_model('henry_test')
 
-error = preds - y
-print(f"STD of preds is: {preds.std()}")
-print(f"STD of y is: {y.std()}")
-print(abs(error).mean())
-
-plt.figure(figsize=(10, 6))
-plt.scatter(y, preds, label='Predictions vs Actual', color='blue', alpha=0.5)
-plt.title('Predictions vs Actual Values')
-plt.xlabel('Actual Values')
-plt.ylabel('Predicted Values')
-plt.legend()
-plt.show()
+    print('MSE:', mse)
+    print('Finished seed', 42)
